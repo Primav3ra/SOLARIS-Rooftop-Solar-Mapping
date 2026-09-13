@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import json
+import math
 import os
+import threading
+from pathlib import Path
 from datetime import date, timedelta
 from typing import Any, Dict, List, Optional, Tuple, Literal
 
@@ -9,7 +12,7 @@ import ee
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from scripts.utility import SolarMappingUtils
 from scripts.irradiance_baseline import (
@@ -179,30 +182,128 @@ def _solar_positions_for_window(
     return pos
 
 
-class BaselineRequest(BaseModel):
-    project_id: Optional[str] = Field(default_factory=lambda: os.environ.get("GEE_PROJECT_ID", "pv-mapping-india"))
+# ---------------------------------------------------------------------------
+# Request bounds -- these are the primary defence against Earth Engine quota
+# exhaustion. Without them a single well-formed request can ask EE for a region
+# the size of a continent, which no rate limiter can protect against.
+# ---------------------------------------------------------------------------
+
+MAX_AOI_KM2: float = 30.0          # keeps AOIs inside the 4 m reduce-scale tier
+MAX_HALF_SIZE_DEG: float = 0.025   # ~2.8 km half-side => ~30 km2 at Delhi latitude
+MAX_AOI_VERTICES: int = 100
+OPEN_BUILDINGS_MIN_YEAR: int = 2016   # Open Buildings 2.5D Temporal v1 vintages
+OPEN_BUILDINGS_MAX_YEAR: int = 2023
+
+_DEG_KM = 111.32   # km per degree of latitude
+
+
+def polygon_area_km2(coords: List[List[float]]) -> float:
+    """
+    Approximate polygon area in km^2 via the shoelace formula on an
+    equirectangular projection scaled at the polygon's mean latitude.
+    Good enough as an input guard; not used for any reported quantity.
+    """
+    if not coords or len(coords) < 3:
+        return 0.0
+    lats = [float(p[1]) for p in coords]
+    mean_lat_rad = math.radians(sum(lats) / len(lats))
+    ring = coords[:-1] if coords[0] == coords[-1] else coords
+    n = len(ring)
+    if n < 3:
+        return 0.0
+    acc = 0.0
+    for i in range(n):
+        x1, y1 = float(ring[i][0]), float(ring[i][1])
+        x2, y2 = float(ring[(i + 1) % n][0]), float(ring[(i + 1) % n][1])
+        acc += x1 * y2 - x2 * y1
+    area_deg2 = abs(acc) / 2.0
+    return area_deg2 * (_DEG_KM ** 2) * math.cos(mean_lat_rad)
+
+
+class AoiMixin(BaseModel):
+    """AOI selection: either an explicit polygon or a lat/lon centre + half-size."""
+
     coordinates: Optional[List[List[float]]] = None
-    lat: Optional[float] = None
-    lon: Optional[float] = None
-    half_size_deg: float = 0.01
-    roof_year: int = 2022
-    presence_threshold: float = 0.5
-    min_height_m: float = 0.0
-    baseline_mode: str = "yearly"  # yearly | quarterly | daily
-    year: Optional[int] = None
-    quarter: Optional[int] = None
-    month: Optional[int] = None
+    lat: Optional[float] = Field(default=None, ge=-90.0, le=90.0)
+    lon: Optional[float] = Field(default=None, ge=-180.0, le=180.0)
+    half_size_deg: float = Field(default=0.01, gt=0.0, le=MAX_HALF_SIZE_DEG)
+
+    @field_validator("coordinates")
+    @classmethod
+    def _check_ring(cls, v: Optional[List[List[float]]]) -> Optional[List[List[float]]]:
+        if v is None:
+            return v
+        if len(v) < 4:
+            raise ValueError("coordinates must be a closed ring of at least 4 positions")
+        if len(v) > MAX_AOI_VERTICES:
+            raise ValueError(f"coordinates must have at most {MAX_AOI_VERTICES} positions")
+        for p in v:
+            if len(p) < 2:
+                raise ValueError("each coordinate must be [lon, lat]")
+            lon, lat = float(p[0]), float(p[1])
+            if not (-180.0 <= lon <= 180.0 and -90.0 <= lat <= 90.0):
+                raise ValueError(f"coordinate out of range: [{lon}, {lat}]")
+        area = polygon_area_km2(v)
+        if area > MAX_AOI_KM2:
+            raise ValueError(
+                f"AOI area {area:.1f} km2 exceeds the {MAX_AOI_KM2} km2 limit; "
+                "request a smaller area"
+            )
+        return v
+
+    @model_validator(mode="after")
+    def _require_aoi(self) -> "AoiMixin":
+        if self.coordinates is None and (self.lat is None or self.lon is None):
+            raise ValueError("Provide either coordinates or both lat and lon.")
+        return self
+
+
+class RoofMixin(BaseModel):
+    """Rooftop mask parameters."""
+
+    roof_year: int = Field(
+        default=2022, ge=OPEN_BUILDINGS_MIN_YEAR, le=OPEN_BUILDINGS_MAX_YEAR
+    )
+    presence_threshold: float = Field(default=0.5, ge=0.0, le=1.0)
+    min_height_m: float = Field(default=0.0, ge=0.0, le=500.0)
+
+
+class TemporalMixin(BaseModel):
+    """Temporal window selection."""
+
+    baseline_mode: str = "yearly"  # yearly | quarterly | monthly | daily
+    year: Optional[int] = Field(default=None, ge=2000, le=2100)
+    quarter: Optional[int] = Field(default=None, ge=1, le=4)
+    month: Optional[int] = Field(default=None, ge=1, le=12)
     start_date: Optional[str] = None
     end_date_exclusive: Optional[str] = None
 
 
-app = FastAPI(title="PV Baseline API", version="0.1.0")
+class BaselineRequest(AoiMixin, RoofMixin, TemporalMixin):
+    pass
+
+
+app = FastAPI(title="SOLARIS API", version="0.1.0")
+
+# The UI is served same-origin from this same app, so CORS is only needed for
+# local development and any future separately-hosted frontend. Note that
+# allow_origins=["*"] together with allow_credentials=True is invalid per the
+# CORS spec (browsers reject a wildcard origin when credentials are sent), so
+# the previous configuration offered no real capability -- and nothing here
+# uses cookies or auth headers, so credentials are simply off.
+_cors_origins = [
+    o.strip()
+    for o in os.environ.get(
+        "SOLARIS_CORS_ORIGINS", "http://localhost:8000,http://127.0.0.1:8000"
+    ).split(",")
+    if o.strip()
+]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=_cors_origins,
+    allow_credentials=False,
+    allow_methods=["GET", "POST"],
+    allow_headers=["Content-Type"],
 )
 
 
@@ -235,7 +336,7 @@ def compute_baseline(req: BaselineRequest) -> Dict[str, Any]:
         coords = req.coordinates
 
     try:
-        utils = SolarMappingUtils(req.project_id)
+        utils = SolarMappingUtils(gee_project_id())
         aoi = ee.Geometry.Polygon(coords)
 
         dem = utils.get_elevation_data(aoi)
@@ -348,54 +449,29 @@ def compute_baseline(req: BaselineRequest) -> Dict[str, Any]:
         raise HTTPException(status_code=500, detail=str(e))
 
 
-class YieldRequest(BaseModel):
-    project_id: Optional[str] = Field(default_factory=lambda: os.environ.get("GEE_PROJECT_ID", "pv-mapping-india"))
-    coordinates: Optional[List[List[float]]] = None
-    lat: Optional[float] = None
-    lon: Optional[float] = None
-    half_size_deg: float = 0.01
-    roof_year: int = 2022
-    presence_threshold: float = 0.5
-    min_height_m: float = 0.0
-    baseline_mode: str = "yearly"
-    year: Optional[int] = None
-    quarter: Optional[int] = None
-    month: Optional[int] = None
-    start_date: Optional[str] = None
-    end_date_exclusive: Optional[str] = None
-    panel_efficiency: float = 0.18
-    performance_ratio: float = 0.80
-    packing_factor: float = 0.7  # usable-roof coverage fraction: panels never tile 100% of a roof
-                                 # (setbacks, obstructions, water tanks, access). Typical 0.6-0.75.
-    building_confidence: float = 0.7
+class YieldRequest(AoiMixin, RoofMixin, TemporalMixin):
+    panel_efficiency: float = Field(default=0.18, gt=0.0, le=0.40)
+    performance_ratio: float = Field(default=0.80, gt=0.0, le=1.0)
+    # usable-roof coverage fraction: panels never tile 100% of a roof
+    # (setbacks, obstructions, water tanks, access). Typical 0.6-0.75.
+    packing_factor: float = Field(default=0.7, gt=0.0, le=1.0)
+    building_confidence: float = Field(default=0.7, ge=0.0, le=1.0)
 
 
-class TilesRequest(BaseModel):
-    project_id: Optional[str] = Field(default_factory=lambda: os.environ.get("GEE_PROJECT_ID", "pv-mapping-india"))
-    coordinates: Optional[List[List[float]]] = None
-    lat: Optional[float] = None
-    lon: Optional[float] = None
-    half_size_deg: float = 0.01
-    roof_year: int = 2022
-    presence_threshold: float = 0.5
-    min_height_m: float = 0.0
-    baseline_mode: str = "yearly"
-    year: Optional[int] = None
-    quarter: Optional[int] = None
-    month: Optional[int] = None
-    start_date: Optional[str] = None
-    end_date_exclusive: Optional[str] = None
-    layer: Literal["roof_mask", "shadow_frequency", "sky_view_factor", "net_irradiance", "combined_derate", "temperature_delta"] = "roof_mask"
+class TilesRequest(AoiMixin, RoofMixin, TemporalMixin):
+    layer: Literal[
+        "roof_mask",
+        "shadow_frequency",
+        "sky_view_factor",
+        "net_irradiance",
+        "combined_derate",
+        "temperature_delta",
+    ] = "roof_mask"
 
 
-class BuildingsRequest(BaseModel):
-    project_id: Optional[str] = Field(default_factory=lambda: os.environ.get("GEE_PROJECT_ID", "pv-mapping-india"))
-    coordinates: Optional[List[List[float]]] = None
-    lat: Optional[float] = None
-    lon: Optional[float] = None
-    half_size_deg: float = 0.01
-    building_confidence: float = 0.7
-    limit: int = 400
+class BuildingsRequest(AoiMixin):
+    building_confidence: float = Field(default=0.7, ge=0.0, le=1.0)
+    limit: int = Field(default=400, ge=1, le=2000)
 
 
 def _aoi_from_req(req: Any) -> Tuple[List[List[float]], ee.Geometry]:
@@ -409,21 +485,47 @@ def _aoi_from_req(req: Any) -> Tuple[List[List[float]], ee.Geometry]:
 
 
 _EE_INIT_PROJECT: Optional[str] = None
+_EE_INIT_LOCK = threading.Lock()
 
 
-def _ensure_ee(project_id: str) -> None:
+def gee_project_id() -> str:
     """
-    Spin EE up once per process (only re-inits if the project id changes) so we're not
-    paying for ee.Initialize on every request.
+    The Earth Engine project, from server configuration only.
 
-    Credential hunt, in order: GEE_SA_JSON (whole key pasted into an env var -- easiest
-    on Render/Fly), GEE_SA_KEY_FILE (a key file path), the service account Cloud Run
-    attaches to the revision (keyless, what prod uses), and finally your local
-    `earthengine authenticate` creds for dev.
+    Deliberately NOT accepted from the request body: a client-supplied project id
+    would let any caller choose which GCP project this server initialises Earth
+    Engine against, which is both an enumeration oracle and a way to attribute
+    someone else's quota and billing.
+    """
+    return os.environ.get("GEE_PROJECT_ID", "pv-mapping-india")
+
+
+def _ensure_ee(project_id: Optional[str] = None) -> None:
+    """
+    Spin EE up once per process so we're not paying for ee.Initialize on every
+    request. The project always comes from server config; the argument exists
+    only for tests.
+
+    Credential hunt, in order: GEE_SA_JSON (whole key pasted into an env var --
+    easiest on Render/Fly), GEE_SA_KEY_FILE (a key file path), Application
+    Default Credentials (keyless -- covers Cloud Run, GCE and Workload Identity
+    Federation), and finally local `earthengine authenticate` creds for dev.
     """
     global _EE_INIT_PROJECT
+    project_id = project_id or gee_project_id()
     if _EE_INIT_PROJECT == project_id:
         return
+
+    # Endpoints are sync `def`, so FastAPI runs them on a threadpool; without this
+    # lock two concurrent cold requests can both call ee.Initialize.
+    with _EE_INIT_LOCK:
+        if _EE_INIT_PROJECT == project_id:
+            return
+        _initialize_ee(project_id)
+        _EE_INIT_PROJECT = project_id
+
+
+def _initialize_ee(project_id: str) -> None:
 
     sa_email = os.environ.get("GEE_SERVICE_ACCOUNT")
     sa_json = os.environ.get("GEE_SA_JSON")
@@ -434,18 +536,25 @@ def _ensure_ee(project_id: str) -> None:
         ee.Initialize(ee.ServiceAccountCredentials(email, key_data=sa_json), project=project_id)
     elif sa_key_file:
         ee.Initialize(ee.ServiceAccountCredentials(sa_email, key_file=sa_key_file), project=project_id)
-    elif os.environ.get("K_SERVICE"):
-        # on Cloud Run -- just ride the attached service account, no key file to manage
-        import google.auth
-        adc, _ = google.auth.default(scopes=[
-            "https://www.googleapis.com/auth/earthengine",
-            "https://www.googleapis.com/auth/cloud-platform",
-        ])
-        ee.Initialize(adc, project=project_id)
     else:
-        ee.Initialize(project=project_id)
+        # Application Default Credentials first: this covers Cloud Run's attached
+        # service account (keyless, what prod uses), GCE, Cloud Build and Workload
+        # Identity Federation. The previous K_SERVICE sniff only matched Cloud Run.
+        # Falls through to local `earthengine authenticate` creds when ADC is absent.
+        try:
+            import google.auth
 
-    _EE_INIT_PROJECT = project_id
+            adc, _ = google.auth.default(
+                scopes=[
+                    "https://www.googleapis.com/auth/earthengine",
+                    "https://www.googleapis.com/auth/cloud-platform",
+                ]
+            )
+            ee.Initialize(adc, project=project_id)
+            return
+        except Exception:
+            pass
+        ee.Initialize(project=project_id)
 
 
 def _build_roof_layers(
@@ -561,7 +670,7 @@ def tiles(req: TilesRequest) -> Dict[str, Any]:
         except ValueError as ex:
             raise HTTPException(status_code=400, detail=str(ex))
 
-        _ensure_ee(req.project_id)
+        _ensure_ee()
         coords, aoi = _aoi_from_req(req)
         centroid = aoi.centroid(1)
         lon_deg, lat_deg = _centroid_lon_lat(centroid)
@@ -665,7 +774,7 @@ def buildings(req: BuildingsRequest) -> Dict[str, Any]:
     Intended for map rendering / selection (open-data-only).
     """
     try:
-        _ensure_ee(req.project_id)
+        _ensure_ee()
         coords, aoi = _aoi_from_req(req)
         fc = get_open_buildings_vector(aoi, confidence_threshold=req.building_confidence).limit(req.limit)
         gj = fc.getInfo()
@@ -719,7 +828,7 @@ def compute_yield(req: YieldRequest) -> Dict[str, Any]:
         except ValueError as ex:
             raise HTTPException(status_code=400, detail=str(ex))
 
-        _ensure_ee(req.project_id)
+        _ensure_ee()
         coords, aoi = _aoi_from_req(req)
         centroid = aoi.centroid(1)
         lon_deg, lat_deg = _centroid_lon_lat(centroid)
@@ -1118,7 +1227,7 @@ def compute_series(req: YieldRequest) -> Dict[str, Any]:
         except ValueError as ex:
             raise HTTPException(status_code=400, detail=str(ex))
 
-        _ensure_ee(req.project_id)
+        _ensure_ee()
         coords, aoi = _aoi_from_req(req)
         centroid = aoi.centroid(1)
         lon_deg, lat_deg = _centroid_lon_lat(centroid)
@@ -1187,5 +1296,11 @@ def compute_series(req: YieldRequest) -> Dict[str, Any]:
         raise HTTPException(status_code=500, detail=str(e))
 
 
-app.mount("/", StaticFiles(directory="app/static", html=True), name="static")
+# Resolve the static directory relative to this file, not the process cwd --
+# a relative path here meant the server only worked when launched from the
+# repo root and 500'd otherwise. Guarded so that a checkout without a built
+# frontend can still import the app (tests, CI).
+_STATIC_DIR = Path(__file__).resolve().parent / "static"
+if _STATIC_DIR.is_dir():
+    app.mount("/", StaticFiles(directory=str(_STATIC_DIR), html=True), name="static")
 

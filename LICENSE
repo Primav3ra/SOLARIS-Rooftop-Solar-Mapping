@@ -1,0 +1,49 @@
+MIT License
+
+Copyright (c) 2026 Mehul Karwa
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+---
+
+## Third-party data licences
+
+This licence covers the source code in this repository only. The datasets the
+software accesses via Google Earth Engine remain subject to their own terms:
+
+| Dataset | Licence / terms |
+|---|---|
+| Google Open Buildings v3 (polygons) | CC BY 4.0 |
+| Google Open Buildings 2.5D Temporal v1 | CC BY 4.0 |
+| ECMWF ERA5-Land Hourly | Copernicus Licence |
+| ECMWF ERA5 Hourly | Copernicus Licence |
+| NASA MODIS MOD11A2 (LST) | NASA open data |
+| NASA MODIS MCD19A2 (MAIAC AOD) | NASA open data |
+| USGS SRTMGL1 v003 | Public domain |
+| FABDEM | CC BY-NC-SA 4.0 (non-commercial) |
+
+Validation reference data:
+
+| Source | Licence / terms |
+|---|---|
+| NASA POWER | NASA open data |
+| Global Solar Atlas (Solargis / World Bank ESMAP) | CC BY 4.0 |
+
+Earth Engine use is additionally subject to the Google Earth Engine Terms of
+Service and requires a registered Cloud project.

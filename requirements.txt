@@ -1,12 +1,23 @@
-earthengine-api
-pandas
-numpy
-matplotlib
-seaborn
-folium
-jupyter
-requests
-fastapi
-uvicorn
-geopandas
-geemap
+# SOLARIS runtime dependencies.
+#
+# Phase 0 stopgap: pinned, and reduced to what the code actually imports.
+# Superseded by pyproject.toml + a lock file in Phase 1 (see the plan); this
+# file is kept because `pip install -r requirements.txt` is what most people
+# reflexively try first.
+#
+# Removed as unused (verified: imported nowhere in app/ or scripts/):
+#   pandas, numpy, matplotlib, seaborn, folium, jupyter, geopandas, geemap,
+#   requests
+# geopandas in particular pulled GDAL/Fiona/PROJ into the install for no
+# benefit. numpy/pandas return under the `ml` extra, where they are genuinely
+# needed.
+#
+# Added as previously-undeclared but directly imported:
+#   pydantic     (app/main.py)
+#   google-auth  (app/main.py, ADC credential path)
+
+earthengine-api==1.7.43
+fastapi==0.141.1
+google-auth==2.58.0
+pydantic==2.13.5
+uvicorn[standard]==0.52.4
