@@ -2,12 +2,12 @@
 One place for all the Earth Engine dataset loaders + their catalog IDs, so the IDs
 aren't scattered across the codebase.
 """
+
 from __future__ import annotations
 
-import ee
-from typing import Optional
 from datetime import datetime
 
+import ee
 
 CATALOG = {
     "srtm_dem": "USGS/SRTMGL1_003",
@@ -33,7 +33,7 @@ def get_dem(aoi: ee.Geometry, dem_type: str = "srtm") -> ee.Image:
     raise ValueError(f"dem_type must be 'srtm' or 'fabdem', got: {dem_type}")
 
 
-def get_open_buildings_temporal(aoi: ee.Geometry, year: Optional[int] = None) -> ee.Image:
+def get_open_buildings_temporal(aoi: ee.Geometry, year: int | None = None) -> ee.Image:
     """
     Open Buildings 2.5D Temporal mosaic over aoi (bands: presence, height,
     fractional_count). Pass a year (2016-2023) to pin the vintage; otherwise you get the

@@ -10,18 +10,19 @@ Just stdlib math. Azimuth is clockwise from geographic north (0-360), same as pe
 from __future__ import annotations
 
 import math
-from datetime import date, datetime, timezone
-from typing import List, Tuple
+from datetime import UTC, date, datetime
 
 # altitude_deg, azimuth_deg_from_north, weight, hour_utc (integer 0..23)
-WeightedPosition = Tuple[float, float, float, int]
+WeightedPosition = tuple[float, float, float, int]
 
 
-def sun_altitude_azimuth_north(lat_deg: float, lon_deg: float, when_utc: datetime) -> Tuple[float, float]:
+def sun_altitude_azimuth_north(
+    lat_deg: float, lon_deg: float, when_utc: datetime
+) -> tuple[float, float]:
     """Sun altitude (deg) and azimuth from north clockwise (deg), when_utc must be timezone-aware UTC."""
     if when_utc.tzinfo is None:
         raise ValueError("when_utc must be timezone-aware (use UTC)")
-    when_utc = when_utc.astimezone(timezone.utc)
+    when_utc = when_utc.astimezone(UTC)
     y, m, d = when_utc.year, when_utc.month, when_utc.day
     ut = when_utc.hour + when_utc.minute / 60.0 + when_utc.second / 3600.0
 
@@ -48,9 +49,9 @@ def sun_altitude_azimuth_north(lat_deg: float, lon_deg: float, when_utc: datetim
     lon_rad = math.radians(lon_deg)
     lat_rad = math.radians(lat_deg)
     H = gmst_rad + lon_rad - alpha
-    while H > math.pi:
+    while math.pi < H:
         H -= 2 * math.pi
-    while H < -math.pi:
+    while -math.pi > H:
         H += 2 * math.pi
 
     alt = math.asin(
@@ -65,7 +66,7 @@ def sun_altitude_azimuth_north(lat_deg: float, lon_deg: float, when_utc: datetim
     return alt_deg, az_deg
 
 
-def _normalize_weights(positions: List[WeightedPosition]) -> List[WeightedPosition]:
+def _normalize_weights(positions: list[WeightedPosition]) -> list[WeightedPosition]:
     total = sum(w for _, _, w, _ in positions)
     if total <= 0:
         return [(45.0, 180.0, 1.0, 12)]
@@ -78,14 +79,14 @@ def weighted_positions_for_calendar_day(
     d: date,
     step_hours: float = 1.0,
     min_alt_deg: float = 2.0,
-) -> List[WeightedPosition]:
+) -> list[WeightedPosition]:
     """Hourly (or coarser) samples on one UTC calendar day; weights ~ sin(alt)."""
-    out: List[WeightedPosition] = []
+    out: list[WeightedPosition] = []
     t = 0.0
     while t < 24.0:
         h = int(t)
         mi = int((t - h) * 60)
-        when = datetime(d.year, d.month, d.day, h, mi, 0, tzinfo=timezone.utc)
+        when = datetime(d.year, d.month, d.day, h, mi, 0, tzinfo=UTC)
         alt, az = sun_altitude_azimuth_north(lat_deg, lon_deg, when)
         if alt >= min_alt_deg:
             out.append((alt, az, math.sin(math.radians(alt)), h))
@@ -93,9 +94,9 @@ def weighted_positions_for_calendar_day(
     return _normalize_weights(out)
 
 
-def merge_weighted_position_sets(sets: List[List[WeightedPosition]]) -> List[WeightedPosition]:
+def merge_weighted_position_sets(sets: list[list[WeightedPosition]]) -> list[WeightedPosition]:
     """Concatenate position lists and renormalise weights (equal prior weight per set)."""
-    flat: List[WeightedPosition] = []
+    flat: list[WeightedPosition] = []
     for s in sets:
         if not s:
             continue
@@ -108,7 +109,7 @@ def merge_weighted_position_sets(sets: List[List[WeightedPosition]]) -> List[Wei
     return _normalize_weights(flat)
 
 
-def solar_positions_yearly(lat_deg: float, lon_deg: float, year: int) -> List[WeightedPosition]:
+def solar_positions_yearly(lat_deg: float, lon_deg: float, year: int) -> list[WeightedPosition]:
     """Solstices and equinoxes of the selected calendar year (UTC dates)."""
     key_days = [
         date(year, 3, 21),
@@ -116,11 +117,15 @@ def solar_positions_yearly(lat_deg: float, lon_deg: float, year: int) -> List[We
         date(year, 9, 23),
         date(year, 12, 21),
     ]
-    sets = [weighted_positions_for_calendar_day(lat_deg, lon_deg, kd, step_hours=1.5) for kd in key_days]
+    sets = [
+        weighted_positions_for_calendar_day(lat_deg, lon_deg, kd, step_hours=1.5) for kd in key_days
+    ]
     return merge_weighted_position_sets(sets)
 
 
-def solar_positions_quarterly(lat_deg: float, lon_deg: float, year: int, quarter: int) -> List[WeightedPosition]:
+def solar_positions_quarterly(
+    lat_deg: float, lon_deg: float, year: int, quarter: int
+) -> list[WeightedPosition]:
     """Three mid-month UTC days within the calendar quarter (15th of each month)."""
     if quarter < 1 or quarter > 4:
         raise ValueError("quarter must be 1..4")
@@ -130,7 +135,9 @@ def solar_positions_quarterly(lat_deg: float, lon_deg: float, year: int, quarter
     return merge_weighted_position_sets(sets)
 
 
-def solar_positions_monthly(lat_deg: float, lon_deg: float, year: int, month: int) -> List[WeightedPosition]:
+def solar_positions_monthly(
+    lat_deg: float, lon_deg: float, year: int, month: int
+) -> list[WeightedPosition]:
     """Three representative UTC days in the selected month (8th, 15th, 22nd)."""
     if month < 1 or month > 12:
         raise ValueError("month must be 1..12")
@@ -139,6 +146,6 @@ def solar_positions_monthly(lat_deg: float, lon_deg: float, year: int, month: in
     return merge_weighted_position_sets(sets)
 
 
-def solar_positions_single_day(lat_deg: float, lon_deg: float, d: date) -> List[WeightedPosition]:
+def solar_positions_single_day(lat_deg: float, lon_deg: float, d: date) -> list[WeightedPosition]:
     """One UTC calendar day, hourly sin-weighted samples."""
     return weighted_positions_for_calendar_day(lat_deg, lon_deg, d, step_hours=1.0)

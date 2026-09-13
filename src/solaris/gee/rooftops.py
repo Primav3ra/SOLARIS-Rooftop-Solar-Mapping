@@ -8,13 +8,11 @@ but is off by default; and we reduce at 4 m to match Open Buildings' effective r
 
 from __future__ import annotations
 
-import ee
-from typing import Any, Dict, Optional
+from typing import Any
 
-try:
-    from datasets import get_open_buildings_temporal
-except ImportError:
-    from scripts.datasets import get_open_buildings_temporal
+import ee
+
+from solaris.gee.datasets import get_open_buildings_temporal
 
 
 def build_rooftop_candidate_mask(
@@ -47,7 +45,7 @@ def apply_terrain_exclusion(
     ref = buildings.select("building_presence")
     proj = ref.projection()
     exclusion_repr = exclusion_mask.reproject(crs=proj, scale=scale_m).toFloat()
-    exclusion_bin = exclusion_repr.gt(0.5)   # re-binarize after the resample
+    exclusion_bin = exclusion_repr.gt(0.5)  # re-binarize after the resample
     combined = roof_mask.multiply(exclusion_bin.toUint8())
     return combined.rename("roof_candidate").toUint8()
 
@@ -85,13 +83,13 @@ def choose_reduce_scale_m(aoi_area_km2: float) -> float:
 
 def get_rooftop_area_m2_info(
     aoi: ee.Geometry,
-    year: Optional[int] = 2022,
+    year: int | None = 2022,
     presence_threshold: float = 0.5,
     min_height_m: float = 0.0,
-    exclusion_mask: Optional[ee.Image] = None,
-    scale_m: Optional[float] = None,
+    exclusion_mask: ee.Image | None = None,
+    scale_m: float | None = None,
     tile_scale: int = 4,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     The whole thing end to end -> plain dict (calls getInfo). Loads buildings, builds the
     mask, optionally filters terrain, sums the area. This is the API-facing helper; tests
@@ -112,9 +110,7 @@ def get_rooftop_area_m2_info(
     )
     if exclusion_mask is not None:
         mask = apply_terrain_exclusion(mask, exclusion_mask, buildings, scale_m=scale_m)
-    raw = rooftop_area_m2_reduce(
-        mask, aoi, scale_m=scale_m, tile_scale=tile_scale
-    ).getInfo()
+    raw = rooftop_area_m2_reduce(mask, aoi, scale_m=scale_m, tile_scale=tile_scale).getInfo()
     m2 = raw.get("roof_candidate")
     if m2 is None:
         m2 = 0.0

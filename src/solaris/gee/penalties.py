@@ -42,18 +42,20 @@ Research basis:
             No output cap: loss follows directly from the measured AOD.
             Urban India AOD (0.5-1.2) is 3-5x rural; a genuine urban penalty.
 """
+
 from __future__ import annotations
 
 import math
-import ee
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
+import ee
 
 # ---------------------------------------------------------------------------
 # Helpers shared across penalty classes
 # ---------------------------------------------------------------------------
 
-def _reduce_mean(image: ee.Image, band: str, aoi: ee.Geometry, scale: float) -> Optional[float]:
+
+def _reduce_mean(image: ee.Image, band: str, aoi: ee.Geometry, scale: float) -> float | None:
     """Mean of a single band over AOI. Returns None if no valid pixels."""
     raw = image.reduceRegion(
         reducer=ee.Reducer.mean(),
@@ -66,30 +68,51 @@ def _reduce_mean(image: ee.Image, band: str, aoi: ee.Geometry, scale: float) -> 
     return float(val) if val is not None else None
 
 
-def _make_solar_positions() -> List[Tuple[float, float, float]]:
+def _make_solar_positions() -> list[tuple[float, float, float]]:
     """
     18 representative (alt_deg, az_deg, weight) positions: solstices x2, equinox x1,
     6 times of day each. weight = sin(alt_rad); equinox doubled for spring+autumn.
     Weights normalised to sum = 1. Solar geometry for Delhi 28.6 N.
     """
     seasons = [
-        ("summer", [
-            (8.0,  69.0), (28.0,  84.0), (58.0, 100.0),
-            (84.0, 180.0),
-            (58.0, 260.0), (28.0, 276.0), (8.0, 291.0),
-        ]),
-        ("winter", [
-            (3.0, 120.0), (14.0, 136.0), (28.0, 150.0),
-            (38.0, 180.0),
-            (28.0, 210.0), (14.0, 224.0), (3.0, 240.0),
-        ]),
-        ("equinox", [
-            (5.0,  90.0), (21.0,  98.0), (44.0, 112.0),
-            (62.0, 180.0),
-            (44.0, 248.0), (21.0, 262.0), (5.0, 270.0),
-        ]),
+        (
+            "summer",
+            [
+                (8.0, 69.0),
+                (28.0, 84.0),
+                (58.0, 100.0),
+                (84.0, 180.0),
+                (58.0, 260.0),
+                (28.0, 276.0),
+                (8.0, 291.0),
+            ],
+        ),
+        (
+            "winter",
+            [
+                (3.0, 120.0),
+                (14.0, 136.0),
+                (28.0, 150.0),
+                (38.0, 180.0),
+                (28.0, 210.0),
+                (14.0, 224.0),
+                (3.0, 240.0),
+            ],
+        ),
+        (
+            "equinox",
+            [
+                (5.0, 90.0),
+                (21.0, 98.0),
+                (44.0, 112.0),
+                (62.0, 180.0),
+                (44.0, 248.0),
+                (21.0, 262.0),
+                (5.0, 270.0),
+            ],
+        ),
     ]
-    positions: List[Tuple[float, float, float]] = []
+    positions: list[tuple[float, float, float]] = []
     for label, entries in seasons:
         repeat = 2 if label == "equinox" else 1
         for alt, az in entries:
@@ -101,8 +124,9 @@ def _make_solar_positions() -> List[Tuple[float, float, float]]:
 
 
 # ---------------------------------------------------------------------------
-# Class 1 – ShadowPenalty
+# Class 1 - ShadowPenalty
 # ---------------------------------------------------------------------------
+
 
 class ShadowPenalty:
     """
@@ -127,7 +151,7 @@ class ShadowPenalty:
     MAX_SHADOW_PIXELS: int = 100  # 100 px * 4 m/px = 400 m maximum shadow reach
 
     # Default positions (Delhi 28.6 N); overridden by dynamic solar_geometry module
-    _DELHI_POSITIONS: List[Tuple[float, float, float]] = _make_solar_positions()
+    _DELHI_POSITIONS: list[tuple[float, float, float]] = _make_solar_positions()
 
     @staticmethod
     def _mask_for_position(
@@ -154,17 +178,12 @@ class ShadowPenalty:
         dilated = translated.focal_max(kernel=kernel)
         caster_h = building_height.translate(dx, dy)
 
-        return (
-            dilated.gte(1.0)
-            .And(caster_h.gt(building_height))
-            .rename("in_shadow")
-            .toUint8()
-        )
+        return dilated.gte(1.0).And(caster_h.gt(building_height)).rename("in_shadow").toUint8()
 
     @staticmethod
     def frequency(
         building_height: ee.Image,
-        solar_positions: Optional[List[Tuple]] = None,
+        solar_positions: list[tuple] | None = None,
         pixel_size_m: float = 4.0,
     ) -> ee.Image:
         """
@@ -195,8 +214,9 @@ class ShadowPenalty:
 
 
 # ---------------------------------------------------------------------------
-# Class 1b – SkyViewFactor  (diffuse counterpart of ShadowPenalty)
+# Class 1b - SkyViewFactor  (diffuse counterpart of ShadowPenalty)
 # ---------------------------------------------------------------------------
+
 
 class SkyViewFactor:
     """
@@ -218,30 +238,32 @@ class SkyViewFactor:
     N_AZIMUTH: int = 8
     # how far out to look, in pixels (x4m). Roughly log-spaced -- the near buildings set
     # the horizon; anything far away barely subtends an angle.
-    DIST_PX: Tuple[int, ...] = (1, 2, 4, 8, 16)
+    DIST_PX: tuple[int, ...] = (1, 2, 4, 8, 16)
 
     @staticmethod
     def image(
         building_height: ee.Image,
         pixel_size_m: float = 4.0,
-        n_azimuth: Optional[int] = None,
-        dist_px: Optional[Tuple[int, ...]] = None,
+        n_azimuth: int | None = None,
+        dist_px: tuple[int, ...] | None = None,
     ) -> ee.Image:
         """Per-pixel Sky View Factor [0, 1]. Band: sky_view_factor."""
         n_az = int(n_azimuth or SkyViewFactor.N_AZIMUTH)
         dists = dist_px or SkyViewFactor.DIST_PX
 
-        sin2_terms: List[ee.Image] = []
+        sin2_terms: list[ee.Image] = []
         for k in range(n_az):
             az = 2.0 * math.pi * k / n_az
             ux, uy = math.sin(az), math.cos(az)
 
             # walk outward in this direction, keep the steepest obstruction
-            angle_imgs: List[ee.Image] = []
+            angle_imgs: list[ee.Image] = []
             for d in dists:
                 dm = float(d) * pixel_size_m
                 neighbour = building_height.translate(ux * d, uy * d)
-                rise = neighbour.subtract(building_height).max(0.0)   # ignore anything shorter than us
+                rise = neighbour.subtract(building_height).max(
+                    0.0
+                )  # ignore anything shorter than us
                 angle_imgs.append(rise.divide(dm).atan())
             horizon = angle_imgs[0]
             for a in angle_imgs[1:]:
@@ -258,8 +280,9 @@ class SkyViewFactor:
 
 
 # ---------------------------------------------------------------------------
-# Class 2 – UHIPenalty
+# Class 2 - UHIPenalty
 # ---------------------------------------------------------------------------
+
 
 class UHIPenalty:
     """
@@ -281,7 +304,7 @@ class UHIPenalty:
 
     MODIS_COLLECTION = "MODIS/061/MOD11A2"
     LST_DAY_BAND = "LST_Day_1km"
-    LST_SCALE = 0.02          # raw integer * 0.02 = Kelvin (MODIS scale factor)
+    LST_SCALE = 0.02  # raw integer * 0.02 = Kelvin (MODIS scale factor)
     K_TO_C_OFFSET = 273.15
     BACKGROUND_KERNEL_PX = 30  # 30 km at 1 km/pixel (large-city UHI footprint; see class docstring)
     DEFAULT_TEMP_COEFF = -0.004  # /degC, crystalline silicon (IEC 60891)
@@ -307,7 +330,7 @@ class UHIPenalty:
         start_date: str,
         temp_coeff: float = DEFAULT_TEMP_COEFF,
         scale_m: float = 1000.0,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """
         UHI intensity + derate for the AOI. start_date just supplies the year for the
         annual LST composite; scale_m should sit near MODIS' native 1 km. Returns a dict
@@ -327,13 +350,16 @@ class UHIPenalty:
 
         # Single reduceRegion call for both bands
         combined = lst.addBands(uhi_anomaly)
-        raw = combined.reduceRegion(
-            reducer=ee.Reducer.mean(),
-            geometry=aoi,
-            scale=scale_m,
-            maxPixels=1e9,
-            bestEffort=True,
-        ).getInfo() or {}
+        raw = (
+            combined.reduceRegion(
+                reducer=ee.Reducer.mean(),
+                geometry=aoi,
+                scale=scale_m,
+                maxPixels=1e9,
+                bestEffort=True,
+            ).getInfo()
+            or {}
+        )
 
         urban_lst = raw.get("LST_celsius")
         delta_t = raw.get("uhi_anomaly")
@@ -365,8 +391,9 @@ class UHIPenalty:
 
 
 # ---------------------------------------------------------------------------
-# Class 3 – SoilingPenalty
+# Class 3 - SoilingPenalty
 # ---------------------------------------------------------------------------
+
 
 class SoilingPenalty:
     """
@@ -390,10 +417,10 @@ class SoilingPenalty:
     """
 
     MAIAC_COLLECTION = "MODIS/061/MCD19A2_GRANULES"
-    AOD_BAND = "Optical_Depth_055"   # 550 nm standard reference; scale factor 0.001
+    AOD_BAND = "Optical_Depth_055"  # 550 nm standard reference; scale factor 0.001
     AOD_SCALE = 0.001
-    SOILING_COEFFICIENT = 0.08       # fractional loss per unit mean AOD per year
-                                     # (Kimber et al. 2006; Sayyah et al. 2014)
+    SOILING_COEFFICIENT = 0.08  # fractional loss per unit mean AOD per year
+    # (Kimber et al. 2006; Sayyah et al. 2014)
 
     @classmethod
     def aod_image(cls, aoi: ee.Geometry, year: int) -> ee.Image:
@@ -415,7 +442,7 @@ class SoilingPenalty:
         start_date: str,
         soiling_coefficient: float = SOILING_COEFFICIENT,
         scale_m: float = 1000.0,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """
         Soiling retention from MAIAC AOD. Year comes from start_date; scale_m near MAIAC's
         1 km. Returns the mean AOD, the loss fraction (mean_AOD * coefficient, uncapped),
@@ -429,7 +456,7 @@ class SoilingPenalty:
 
         if mean_aod is None:
             # No valid MAIAC retrievals for this AOI/year (very unlikely for India)
-            mean_aod = 0.50   # conservative urban India annual mean
+            mean_aod = 0.50  # conservative urban India annual mean
             source = "fallback_urban_midpoint"
 
         mean_aod = float(mean_aod)
@@ -452,13 +479,14 @@ class SoilingPenalty:
 # Combined net-irradiance builder (used by /api/yield and /api/tiles)
 # ---------------------------------------------------------------------------
 
+
 def net_irradiance_image(
     baseline_kwh_m2_period: float,
     shadow_frequency: ee.Image,
     beam_fraction: float = 1.0,
     uhi_derate: float = 1.0,
     soiling_retention: float = 1.0,
-    sky_view_factor: Optional[Any] = None,
+    sky_view_factor: Any | None = None,
 ) -> ee.Image:
     """
     Stitches the penalty layers into one per-pixel net-irradiance image:
@@ -476,7 +504,7 @@ def net_irradiance_image(
 
     if sky_view_factor is None:
         svf = ee.Image(1.0)
-    elif isinstance(sky_view_factor, (int, float)):
+    elif isinstance(sky_view_factor, int | float):
         svf = ee.Image(float(sky_view_factor))
     else:
         svf = sky_view_factor

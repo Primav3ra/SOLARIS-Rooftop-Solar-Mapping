@@ -1,0 +1,125 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "solaris"
+version = "0.2.0"
+description = "Rooftop solar PV yield mapping for urban India, from Earth Engine data"
+readme = "README.md"
+license = { file = "LICENSE" }
+authors = [{ name = "Mehul Karwa" }]
+requires-python = ">=3.11"
+classifiers = [
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Scientific/Engineering :: GIS",
+]
+
+# Runtime only. Verified against actual imports -- `pandas`, `numpy`,
+# `matplotlib`, `seaborn`, `folium`, `jupyter`, `geopandas`, `geemap` and
+# `requests` were all declared but imported nowhere, and `geopandas` alone
+# pulled GDAL/Fiona/PROJ into the install.
+dependencies = [
+  "earthengine-api>=1.7,<2",
+  "fastapi>=0.115,<1",
+  "google-auth>=2.30,<3",   # imported directly on the ADC path
+  "pydantic>=2.8,<3",       # imported directly; was only transitive before
+  "uvicorn[standard]>=0.30,<1",
+]
+
+[project.optional-dependencies]
+# Reference physics + the ML tracks. Not needed to serve the API.
+ml = [
+  "pvlib>=0.11,<1",
+  "numpy>=1.26,<3",
+  "pandas>=2.2,<3",
+  "scikit-learn>=1.5,<2",
+  "lightgbm>=4.5,<5",
+  "joblib>=1.4,<2",
+  "pyarrow>=17,<22",
+]
+# Validation harness: the ml stack plus reference-API access.
+evals = [
+  "solaris[ml]",
+  "requests>=2.32,<3",
+]
+dev = [
+  "pytest>=8.3,<9",
+  "pytest-cov>=5,<8",
+  "pytest-mock>=3.14,<4",
+  "hypothesis>=6.100,<7",
+  "httpx>=0.27,<1",
+  "ruff>=0.6",
+  "mypy>=1.11",
+  "pip-audit>=2.7",
+  "pre-commit>=3.8",
+]
+
+[project.scripts]
+solaris-api = "solaris.api.app:main"
+
+[project.urls]
+Repository = "https://github.com/Primav3ra/SOLARIS-Rooftop-Solar-Mapping"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/solaris"]
+
+# ---------------------------------------------------------------------------
+# Tooling
+# ---------------------------------------------------------------------------
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "C4", "SIM", "TID", "RUF"]
+ignore = [
+  "E501",    # line length is ruff-format's job
+  "B008",    # FastAPI's Depends() in defaults is idiomatic
+]
+
+[tool.ruff.lint.flake8-tidy-imports]
+# Absolute imports only. The old `try: from datasets import x / except
+# ImportError: from scripts.datasets import x` shims existed precisely because
+# the package was import-path dependent; this keeps them from coming back.
+ban-relative-imports = "all"
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["E402"]   # sys.path-free test scripts still print-and-assert
+
+[tool.mypy]
+python_version = "3.11"
+# Typed at the boundaries only. Every `ee.*` object is effectively Any, so
+# strict mode over solaris/gee would generate many `type: ignore`s and find
+# nothing. solaris.core / solaris.api are where types pay.
+files = ["src/solaris/core", "src/solaris/api"]
+warn_unused_ignores = true
+warn_redundant_casts = true
+no_implicit_optional = true
+disallow_untyped_defs = false
+
+[[tool.mypy.overrides]]
+module = ["ee.*", "google.auth.*"]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+# Default run is offline: no Earth Engine credentials, no network. A fresh
+# clone must get a green `pytest` with no GCP account.
+addopts = "-m 'not gee and not network' --strict-markers -q"
+markers = [
+  "gee: requires live Earth Engine credentials",
+  "network: requires internet access to a third-party API",
+  "slow: takes more than a few seconds",
+]
+
+[tool.coverage.run]
+source = ["src/solaris"]
+branch = true
+
+[tool.coverage.report]
+exclude_lines = ["pragma: no cover", "if TYPE_CHECKING:", "raise NotImplementedError"]
