@@ -4,8 +4,9 @@ Verify that dataset loaders in datasets.py and utility.py work against GEE.
 Run from project root: python scripts/test_datasets.py
 Or from scripts/: python test_datasets.py
 """
-import sys
+
 import os
+import sys
 
 # Ensure project root or scripts/ is on path
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -51,12 +52,12 @@ def main():
     # 2. Test datasets module directly
     print("Testing scripts.datasets functions (direct)")
     try:
-        from scripts.datasets import (
+        from solaris.gee.datasets import (
             get_dem,
             get_open_buildings_temporal,
         )
     except ImportError:
-        from datasets import (
+        from solaris.gee.datasets import (
             get_dem,
             get_open_buildings_temporal,
         )
@@ -74,7 +75,9 @@ def main():
     run_test("get_dem(aoi, 'fabdem')", get_dem, aoi, "fabdem")
 
     # Open Buildings - force evaluation
-    buildings = run_test("get_open_buildings_temporal(aoi, 2022)", get_open_buildings_temporal, aoi, 2022)
+    buildings = run_test(
+        "get_open_buildings_temporal(aoi, 2022)", get_open_buildings_temporal, aoi, 2022
+    )
     if buildings is not None:
         try:
             names = buildings.bandNames().getInfo()
@@ -85,7 +88,7 @@ def main():
     # 3. Test utility.py integration (get_elevation_data)
     print("\nTesting utility.py integration (SolarMappingUtils)")
     try:
-        from scripts.utility import SolarMappingUtils
+        from solaris.gee.utility import SolarMappingUtils
     except ImportError:
         from utility import SolarMappingUtils
 

@@ -3,6 +3,7 @@
 Verify rooftop candidate mask + area (Open Buildings 2.5D) on a small AOI.
 Run from project root: python scripts/tests/test_rooftops.py
 """
+
 import os
 import sys
 
@@ -31,11 +32,11 @@ def main() -> int:
     aoi = ee.Geometry.Polygon(DELHI_SMALL)
 
     try:
-        from scripts.datasets import get_open_buildings_temporal
-        from scripts.rooftops import build_rooftop_candidate_mask, rooftop_area_m2_reduce
+        from solaris.gee.datasets import get_open_buildings_temporal
+        from solaris.gee.rooftops import build_rooftop_candidate_mask, rooftop_area_m2_reduce
     except ImportError:
-        from datasets import get_open_buildings_temporal
-        from rooftops import build_rooftop_candidate_mask, rooftop_area_m2_reduce
+        from solaris.gee.datasets import get_open_buildings_temporal
+        from solaris.gee.rooftops import build_rooftop_candidate_mask, rooftop_area_m2_reduce
 
     buildings = get_open_buildings_temporal(aoi, year=2022)
     mask = build_rooftop_candidate_mask(buildings, presence_threshold=0.5, min_height_m=0.0)
@@ -45,9 +46,9 @@ def main() -> int:
     print(f"       reduceRegion keys: {list(raw.keys())}")
 
     try:
-        from scripts.rooftops import get_rooftop_area_m2_info
+        from solaris.gee.rooftops import get_rooftop_area_m2_info
     except ImportError:
-        from rooftops import get_rooftop_area_m2_info
+        from solaris.gee.rooftops import get_rooftop_area_m2_info
 
     info = get_rooftop_area_m2_info(
         aoi,

@@ -41,13 +41,13 @@ def main() -> int:
     aoi = ee.Geometry.Polygon(DELHI_SMALL)
 
     try:
-        from scripts.datasets import get_open_buildings_temporal
-        from scripts.rooftops import build_rooftop_candidate_mask
-        from scripts.irradiance_baseline import get_roof_masked_era5_baseline_info
+        from solaris.gee.datasets import get_open_buildings_temporal
+        from solaris.gee.irradiance import get_roof_masked_era5_baseline_info
+        from solaris.gee.rooftops import build_rooftop_candidate_mask
     except ImportError:
-        from datasets import get_open_buildings_temporal
-        from rooftops import build_rooftop_candidate_mask
-        from irradiance_baseline import get_roof_masked_era5_baseline_info
+        from solaris.gee.datasets import get_open_buildings_temporal
+        from solaris.gee.irradiance import get_roof_masked_era5_baseline_info
+        from solaris.gee.rooftops import build_rooftop_candidate_mask
 
     buildings = get_open_buildings_temporal(aoi, year=2022)
     roof_mask = build_rooftop_candidate_mask(buildings, presence_threshold=0.5, min_height_m=0.0)
@@ -68,25 +68,27 @@ def main() -> int:
     print(f"regional_irradiance_kwh_m2_yr = {irr:.1f} kWh/m^2/year  [source: {src}]")
     print(f"pre_penalty_total_kwh_year    = {total:.0f} kWh/year")
     print(f"collection                    = {info['collection']}")
-    print(f"Global Solar Atlas reference  = ~1930 kWh/m^2/year (Delhi)")
+    print("Global Solar Atlas reference  = ~1930 kWh/m^2/year (Delhi)")
 
     ok = True
     if roof_area <= 0:
         print("[FAIL] roof_area_m2 is zero or negative")
         ok = False
     else:
-        print(f"[PASS] roof_area_m2 > 0")
+        print("[PASS] roof_area_m2 > 0")
 
     if 1700 <= irr <= 2200:
-        print(f"[PASS] regional_irradiance in expected range [1700, 2200]")
+        print("[PASS] regional_irradiance in expected range [1700, 2200]")
     else:
-        print(f"[WARN] regional_irradiance {irr:.1f} outside expected range -- check units/collection")
+        print(
+            f"[WARN] regional_irradiance {irr:.1f} outside expected range -- check units/collection"
+        )
         ok = False
 
     if total > 0:
-        print(f"[PASS] pre_penalty_total_kwh_year > 0")
+        print("[PASS] pre_penalty_total_kwh_year > 0")
     else:
-        print(f"[FAIL] pre_penalty_total_kwh_year is zero")
+        print("[FAIL] pre_penalty_total_kwh_year is zero")
         ok = False
 
     return 0 if ok else 1

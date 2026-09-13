@@ -4,6 +4,7 @@
 Expected range for Delhi: 1700-2100 kWh/m^2/year.
 Global Solar Atlas reference (Solargis) for Delhi: ~1930 kWh/m^2/year.
 """
+
 import os
 import sys
 
@@ -32,22 +33,24 @@ def main() -> int:
 
     aoi = ee.Geometry.Polygon(DELHI_SMALL)
     try:
-        from scripts.irradiance_baseline import get_era5_baseline_info
+        from solaris.gee.irradiance import get_era5_baseline_info
     except ImportError:
-        from irradiance_baseline import get_era5_baseline_info
+        from solaris.gee.irradiance import get_era5_baseline_info
 
     info = get_era5_baseline_info(aoi, start_year=2020, end_year=2024)
     kwh = info["mean_annual_ghi_kwh_m2_year"]
     src = info["value_source"]
     print(f"ERA5 mean annual GHI (2020-2024): {kwh:.1f} kWh/m^2/year  [source: {src}]")
     print(f"  collection={info['collection']}, band={info['band']}")
-    print(f"  Global Solar Atlas reference for Delhi: ~1930 kWh/m^2/year")
+    print("  Global Solar Atlas reference for Delhi: ~1930 kWh/m^2/year")
 
     if EXPECTED_MIN <= kwh <= EXPECTED_MAX:
         print(f"[PASS] Value in expected range [{EXPECTED_MIN}, {EXPECTED_MAX}]")
         return 0
     else:
-        print(f"[WARN] Value outside expected range [{EXPECTED_MIN}, {EXPECTED_MAX}] -- check units or collection")
+        print(
+            f"[WARN] Value outside expected range [{EXPECTED_MIN}, {EXPECTED_MAX}] -- check units or collection"
+        )
         return 1
 
 
