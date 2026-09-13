@@ -41,9 +41,18 @@ Google Earth Engine
   └─ SRTM (30 m)                         → terrain slope exclusion
 
 src/solaris/
-  core/    constants and cross-cutting config
-  gee/     Earth Engine accessors + the physics layers
-  api/     FastAPI app and the static dashboard it serves
+  core/constants.py   every physical and dataset constant, with provenance
+  gee/                Earth Engine accessors and the physics layers
+  api/
+    app.py            request handlers
+    windows.py        temporal window resolution (no Earth Engine dependency)
+    schemas.py        request models and their bounds
+    deps.py           Earth Engine session, AOI, rooftop layers
+    static/           the dashboard
+tests/
+  unit/               offline; no credentials, no network
+  integration/        marked `gee`; requires Earth Engine auth
+  fakes/              numpy-backed fake Earth Engine + synthetic fixtures
 ```
 
 The net-energy formula, with each factor's provenance, is:
@@ -145,13 +154,29 @@ Engine project is server configuration and is **not** accepted from the request 
 ## Development
 
 ```bash
-pytest                      # offline tests; needs no Earth Engine credentials
-pytest -m gee               # integration tests; requires GEE auth
+pytest                      # 317 offline tests; no credentials, no network
+pytest -m gee               # 23 live Earth Engine tests; requires auth
 ruff check src tests        # lint
 ruff format src tests       # format
 ```
 
-Offline tests must pass on a fresh clone with no Google Cloud account.
+**A fresh clone with no Google Cloud account must get a green `pytest`.** The
+offline suite achieves that with a numpy-backed fake Earth Engine
+([tests/fakes/fake_ee.py](tests/fakes/fake_ee.py)) in which every operation is
+real arithmetic on real arrays, so a wrong formula produces a wrong number. A
+synthetic "world" ([tests/fakes/world.py](tests/fakes/world.py)) registers every
+dataset the API reads, letting all five endpoints run end to end offline and
+giving a deterministic golden file to regress against.
+
+Some tests are marked `xfail(strict=True)`. Those are **executable
+specifications of known defects**: they assert the physically correct answer,
+which the current code does not yet produce. Because the marker is strict,
+fixing a defect turns the test from xfail into a failure until the marker is
+removed — so the defect list cannot drift out of date in either direction.
+
+The live suite includes **semantics probes** that assert what the Earth Engine
+API actually does, for the behaviours the fake reproduces. If a probe fails, the
+fake is wrong and every offline test built on it is suspect.
 
 ## Known limitations
 
@@ -170,8 +195,20 @@ Stated plainly, because they bound how the numbers should be read:
   buildings with steep *roofs*.
 - **Recency is bounded** by ERA5-Land's publication lag and by Open Buildings 2.5D vintages
   (2016–2023), so rooftop geometry is 2023 at newest.
-- Outputs have **not yet been validated** against independent references. That work is in
-  progress; until it lands, treat absolute figures as indicative.
+- **The shadow and sky-view geometry is wrong by a factor of the pixel size.**
+  `ee.Image.translate` defaults to metres and both models pass pixel counts.
+  Measured effect: a 10 m wall 4 m away yields a sky-view factor of 0.9649
+  against an analytic 0.8922 — exactly the value obtained by substituting 16 m
+  for 4 m. Fix pending; see `pytest -q tests/unit/test_penalties.py -rx`.
+- **Soiling dominates the result.** On a representative case it accounts for
+  ~88% of all modelled loss, against ~8% for shadowing and ~4% for sky-view
+  obstruction. So the headline figure rests largely on one uncalibrated linear
+  coefficient (`mean_AOD x 0.08`) rather than on the geometric modelling.
+- Outputs have **not yet been validated** against independent references. Note
+  also that the two obvious references disagree: NASA POWER gives Delhi
+  1753 kWh/m²/yr for 2020 while Global Solar Atlas gives ~1930 — about 10% apart.
+  No accuracy claim can be tighter than that spread. Treat absolute figures as
+  indicative.
 
 ## License
 

@@ -1,19 +1,42 @@
+"""
+SOLARIS HTTP API.
+
+The request handlers live here; everything they lean on has been factored out:
+
+* :mod:`solaris.api.windows`  -- temporal window resolution, no Earth Engine
+* :mod:`solaris.api.schemas`  -- request models and their bounds
+* :mod:`solaris.api.deps`     -- Earth Engine session, AOI, rooftop layers
+* :mod:`solaris.core.constants` -- every physical and dataset constant
+* :mod:`solaris.gee.*`        -- Earth Engine accessors and physics layers
+
+Handlers call Earth Engine helpers through the ``deps`` module rather than
+importing them by name, so patching ``solaris.api.deps.ensure_ee`` in a test
+takes effect everywhere.
+"""
+
 from __future__ import annotations
 
-import json
-import math
 import os
-import threading
-from datetime import date, timedelta
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any
 
 import ee
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field, field_validator, model_validator
 
+from solaris.api import deps
+from solaris.api.schemas import (
+    BaselineRequest,
+    BuildingsRequest,
+    TilesRequest,
+    YieldRequest,
+)
+from solaris.api.windows import (
+    _last_complete_calendar_year,
+    _series_layout,
+    resolve_temporal_window,
+)
 from solaris.gee.datasets import get_open_buildings_vector
 from solaris.gee.irradiance import (
     _ERA5_HOURLY_SCALE_M,
@@ -35,265 +58,20 @@ from solaris.gee.penalties import (
     UHIPenalty,
     net_irradiance_image,
 )
-from solaris.gee.rooftops import (
-    get_rooftop_area_m2_info,
-)
-from solaris.gee.solar_geometry import (
-    solar_positions_monthly,
-    solar_positions_quarterly,
-    solar_positions_single_day,
-    solar_positions_yearly,
-)
+from solaris.gee.rooftops import get_rooftop_area_m2_info
+
+# Re-exported for callers and tests that reach for these on this module.
+gee_project_id = deps.gee_project_id
+_ensure_ee = deps.ensure_ee
+_aoi_from_req = deps.aoi_from_req
+_centroid_lon_lat = deps.centroid_lon_lat
+_solar_positions_for_window = deps.solar_positions_for_window
+_build_roof_layers = deps.build_roof_layers
+_select_target_building = deps.select_target_building
+_ee_tile_template = deps.ee_tile_template
 
 
-def square_aoi_from_point(lat: float, lon: float, half_size_deg: float = 0.01) -> list[list[float]]:
-    return [
-        [lon - half_size_deg, lat - half_size_deg],
-        [lon + half_size_deg, lat - half_size_deg],
-        [lon + half_size_deg, lat + half_size_deg],
-        [lon - half_size_deg, lat + half_size_deg],
-        [lon - half_size_deg, lat - half_size_deg],
-    ]
-
-
-def _last_complete_calendar_year() -> int:
-    return date.today().year - 1
-
-
-def _quarter_bounds(year: int, quarter: int) -> tuple[str, str]:
-    if quarter == 1:
-        return f"{year}-01-01", f"{year}-04-01"
-    if quarter == 2:
-        return f"{year}-04-01", f"{year}-07-01"
-    if quarter == 3:
-        return f"{year}-07-01", f"{year}-10-01"
-    if quarter == 4:
-        return f"{year}-10-01", f"{year + 1}-01-01"
-    raise ValueError("quarter must be 1..4")
-
-
-def _parse_daily_window(start_date: str, end_date_exclusive: str) -> int:
-    d0 = date.fromisoformat(start_date)
-    d1 = date.fromisoformat(end_date_exclusive)
-    if d1 <= d0:
-        raise ValueError("end_date_exclusive must be after start_date")
-    return (d1 - d0).days
-
-
-def resolve_temporal_window(
-    baseline_mode: str,
-    year: int | None,
-    quarter: int | None,
-    month: int | None,
-    start_date: str | None,
-    end_date_exclusive: str | None,
-) -> dict[str, Any]:
-    """
-    Map UI mode to [start_date, end_date_exclusive) for ERA5 and solar alignment.
-    monthly: one UTC calendar month.
-    daily: exactly one UTC calendar day (end = start + 1 day).
-    """
-    ly = _last_complete_calendar_year()
-    mode = (baseline_mode or "yearly").lower()
-    if mode not in ("yearly", "quarterly", "monthly", "daily"):
-        raise ValueError("baseline_mode must be yearly, quarterly, monthly, or daily")
-    if mode == "yearly":
-        y = year if year is not None else ly
-        if y < 2000 or y > ly:
-            raise ValueError(f"year must be between 2000 and {ly} (last complete calendar year)")
-        s, e = f"{y}-01-01", f"{y + 1}-01-01"
-        return {
-            "mode": "yearly",
-            "start_date": s,
-            "end_date_exclusive": e,
-            "calendar_year": y,
-            "quarter": None,
-        }
-    if mode == "quarterly":
-        y = year if year is not None else ly
-        q = quarter if quarter is not None else 2
-        if y < 2000 or y > ly:
-            raise ValueError(f"year must be between 2000 and {ly}")
-        if q < 1 or q > 4:
-            raise ValueError("quarter must be 1..4")
-        s, e = _quarter_bounds(y, q)
-        return {
-            "mode": "quarterly",
-            "start_date": s,
-            "end_date_exclusive": e,
-            "calendar_year": y,
-            "quarter": q,
-            "month": None,
-        }
-    if mode == "monthly":
-        y = year if year is not None else ly
-        m = month if month is not None else 1
-        if y < 2000 or y > ly:
-            raise ValueError(f"year must be between 2000 and {ly}")
-        if m < 1 or m > 12:
-            raise ValueError("month must be 1..12")
-        s = f"{y}-{m:02d}-01"
-        e = f"{y + 1}-01-01" if m == 12 else f"{y}-{m + 1:02d}-01"
-        return {
-            "mode": "monthly",
-            "start_date": s,
-            "end_date_exclusive": e,
-            "calendar_year": y,
-            "quarter": None,
-            "month": m,
-        }
-    if not start_date or not end_date_exclusive:
-        raise ValueError("daily mode requires start_date and end_date_exclusive (ISO YYYY-MM-DD)")
-    # _parse_daily_window already raises ValueError with a caller-facing
-    # message, so let it propagate rather than re-wrapping it.
-    nd = _parse_daily_window(start_date, end_date_exclusive)
-    if nd != 1:
-        raise ValueError(
-            "daily mode requires exactly one calendar day: end_date_exclusive must be start_date + 1 day"
-        )
-    return {
-        "mode": "daily",
-        "start_date": start_date,
-        "end_date_exclusive": end_date_exclusive,
-        "calendar_year": None,
-        "quarter": None,
-        "month": None,
-    }
-
-
-def _centroid_lon_lat(centroid: ee.Geometry) -> tuple[float, float]:
-    g = centroid.getInfo()
-    coords = g.get("coordinates")
-    if not coords or len(coords) < 2:
-        raise RuntimeError("Could not read centroid coordinates")
-    return float(coords[0]), float(coords[1])
-
-
-def _solar_positions_for_window(
-    lat_deg: float,
-    lon_deg: float,
-    win: dict[str, Any],
-) -> list[tuple[float, float, float]]:
-    mode = win["mode"]
-    if mode == "yearly":
-        y = int(win["calendar_year"])
-        pos = solar_positions_yearly(lat_deg, lon_deg, y)
-    elif mode == "quarterly":
-        pos = solar_positions_quarterly(
-            lat_deg, lon_deg, int(win["calendar_year"]), int(win["quarter"])
-        )
-    elif mode == "monthly":
-        pos = solar_positions_monthly(
-            lat_deg, lon_deg, int(win["calendar_year"]), int(win["month"])
-        )
-    else:
-        d0 = date.fromisoformat(win["start_date"])
-        pos = solar_positions_single_day(lat_deg, lon_deg, d0)
-    if len(pos) > 42:
-        pos = pos[::2]
-    return pos
-
-
-# ---------------------------------------------------------------------------
-# Request bounds -- these are the primary defence against Earth Engine quota
-# exhaustion. Without them a single well-formed request can ask EE for a region
-# the size of a continent, which no rate limiter can protect against.
-# ---------------------------------------------------------------------------
-
-MAX_AOI_KM2: float = 30.0  # keeps AOIs inside the 4 m reduce-scale tier
-MAX_HALF_SIZE_DEG: float = 0.025  # ~2.8 km half-side => ~30 km2 at Delhi latitude
-MAX_AOI_VERTICES: int = 100
-OPEN_BUILDINGS_MIN_YEAR: int = 2016  # Open Buildings 2.5D Temporal v1 vintages
-OPEN_BUILDINGS_MAX_YEAR: int = 2023
-
-_DEG_KM = 111.32  # km per degree of latitude
-
-
-def polygon_area_km2(coords: list[list[float]]) -> float:
-    """
-    Approximate polygon area in km^2 via the shoelace formula on an
-    equirectangular projection scaled at the polygon's mean latitude.
-    Good enough as an input guard; not used for any reported quantity.
-    """
-    if not coords or len(coords) < 3:
-        return 0.0
-    lats = [float(p[1]) for p in coords]
-    mean_lat_rad = math.radians(sum(lats) / len(lats))
-    ring = coords[:-1] if coords[0] == coords[-1] else coords
-    n = len(ring)
-    if n < 3:
-        return 0.0
-    acc = 0.0
-    for i in range(n):
-        x1, y1 = float(ring[i][0]), float(ring[i][1])
-        x2, y2 = float(ring[(i + 1) % n][0]), float(ring[(i + 1) % n][1])
-        acc += x1 * y2 - x2 * y1
-    area_deg2 = abs(acc) / 2.0
-    return area_deg2 * (_DEG_KM**2) * math.cos(mean_lat_rad)
-
-
-class AoiMixin(BaseModel):
-    """AOI selection: either an explicit polygon or a lat/lon centre + half-size."""
-
-    coordinates: list[list[float]] | None = None
-    lat: float | None = Field(default=None, ge=-90.0, le=90.0)
-    lon: float | None = Field(default=None, ge=-180.0, le=180.0)
-    half_size_deg: float = Field(default=0.01, gt=0.0, le=MAX_HALF_SIZE_DEG)
-
-    @field_validator("coordinates")
-    @classmethod
-    def _check_ring(cls, v: list[list[float]] | None) -> list[list[float]] | None:
-        if v is None:
-            return v
-        if len(v) < 4:
-            raise ValueError("coordinates must be a closed ring of at least 4 positions")
-        if len(v) > MAX_AOI_VERTICES:
-            raise ValueError(f"coordinates must have at most {MAX_AOI_VERTICES} positions")
-        for p in v:
-            if len(p) < 2:
-                raise ValueError("each coordinate must be [lon, lat]")
-            lon, lat = float(p[0]), float(p[1])
-            if not (-180.0 <= lon <= 180.0 and -90.0 <= lat <= 90.0):
-                raise ValueError(f"coordinate out of range: [{lon}, {lat}]")
-        area = polygon_area_km2(v)
-        if area > MAX_AOI_KM2:
-            raise ValueError(
-                f"AOI area {area:.1f} km2 exceeds the {MAX_AOI_KM2} km2 limit; "
-                "request a smaller area"
-            )
-        return v
-
-    @model_validator(mode="after")
-    def _require_aoi(self) -> AoiMixin:
-        if self.coordinates is None and (self.lat is None or self.lon is None):
-            raise ValueError("Provide either coordinates or both lat and lon.")
-        return self
-
-
-class RoofMixin(BaseModel):
-    """Rooftop mask parameters."""
-
-    roof_year: int = Field(default=2022, ge=OPEN_BUILDINGS_MIN_YEAR, le=OPEN_BUILDINGS_MAX_YEAR)
-    presence_threshold: float = Field(default=0.5, ge=0.0, le=1.0)
-    min_height_m: float = Field(default=0.0, ge=0.0, le=500.0)
-
-
-class TemporalMixin(BaseModel):
-    """Temporal window selection."""
-
-    baseline_mode: str = "yearly"  # yearly | quarterly | monthly | daily
-    year: int | None = Field(default=None, ge=2000, le=2100)
-    quarter: int | None = Field(default=None, ge=1, le=4)
-    month: int | None = Field(default=None, ge=1, le=12)
-    start_date: str | None = None
-    end_date_exclusive: str | None = None
-
-
-class BaselineRequest(AoiMixin, RoofMixin, TemporalMixin):
-    pass
-
-
-app = FastAPI(title="SOLARIS API", version="0.1.0")
+app = FastAPI(title="SOLARIS API", version="0.2.0")
 
 # The UI is served same-origin from this same app, so CORS is only needed for
 # local development and any future separately-hosted frontend. Note that
@@ -348,8 +126,8 @@ def compute_baseline(req: BaselineRequest) -> dict[str, Any]:
     try:
         # EE must be initialised before any ee.* object is constructed --
         # _aoi_from_req builds an ee.Geometry, so it cannot come first.
-        _ensure_ee()
-        coords, aoi = _aoi_from_req(req)
+        deps.ensure_ee()
+        coords, aoi = deps.aoi_from_req(req)
 
         exclusion = build_exclusion_mask(aoi)
         rooftop = get_rooftop_area_m2_info(
@@ -430,196 +208,6 @@ def compute_baseline(req: BaselineRequest) -> dict[str, Any]:
         raise HTTPException(status_code=500, detail=str(e)) from e
 
 
-class YieldRequest(AoiMixin, RoofMixin, TemporalMixin):
-    panel_efficiency: float = Field(default=0.18, gt=0.0, le=0.40)
-    performance_ratio: float = Field(default=0.80, gt=0.0, le=1.0)
-    # usable-roof coverage fraction: panels never tile 100% of a roof
-    # (setbacks, obstructions, water tanks, access). Typical 0.6-0.75.
-    packing_factor: float = Field(default=0.7, gt=0.0, le=1.0)
-    building_confidence: float = Field(default=0.7, ge=0.0, le=1.0)
-
-
-class TilesRequest(AoiMixin, RoofMixin, TemporalMixin):
-    layer: Literal[
-        "roof_mask",
-        "shadow_frequency",
-        "sky_view_factor",
-        "net_irradiance",
-        "combined_derate",
-        "temperature_delta",
-    ] = "roof_mask"
-
-
-class BuildingsRequest(AoiMixin):
-    building_confidence: float = Field(default=0.7, ge=0.0, le=1.0)
-    limit: int = Field(default=400, ge=1, le=2000)
-
-
-def _aoi_from_req(req: Any) -> tuple[list[list[float]], ee.Geometry]:
-    if getattr(req, "coordinates", None) is None:
-        if getattr(req, "lat", None) is None or getattr(req, "lon", None) is None:
-            raise HTTPException(status_code=400, detail="Provide either coordinates or lat/lon.")
-        coords = square_aoi_from_point(float(req.lat), float(req.lon), float(req.half_size_deg))
-    else:
-        coords = req.coordinates
-    return coords, ee.Geometry.Polygon(coords)
-
-
-_EE_INIT_PROJECT: str | None = None
-_EE_INIT_LOCK = threading.Lock()
-
-
-def gee_project_id() -> str:
-    """
-    The Earth Engine project, from server configuration only.
-
-    Deliberately NOT accepted from the request body: a client-supplied project id
-    would let any caller choose which GCP project this server initialises Earth
-    Engine against, which is both an enumeration oracle and a way to attribute
-    someone else's quota and billing.
-    """
-    return os.environ.get("GEE_PROJECT_ID", "pv-mapping-india")
-
-
-def _ensure_ee(project_id: str | None = None) -> None:
-    """
-    Spin EE up once per process so we're not paying for ee.Initialize on every
-    request. The project always comes from server config; the argument exists
-    only for tests.
-
-    Credential hunt, in order: GEE_SA_JSON (whole key pasted into an env var --
-    easiest on Render/Fly), GEE_SA_KEY_FILE (a key file path), Application
-    Default Credentials (keyless -- covers Cloud Run, GCE and Workload Identity
-    Federation), and finally local `earthengine authenticate` creds for dev.
-    """
-    global _EE_INIT_PROJECT
-    project_id = project_id or gee_project_id()
-    if project_id == _EE_INIT_PROJECT:
-        return
-
-    # Endpoints are sync `def`, so FastAPI runs them on a threadpool; without this
-    # lock two concurrent cold requests can both call ee.Initialize.
-    with _EE_INIT_LOCK:
-        if project_id == _EE_INIT_PROJECT:
-            return
-        _initialize_ee(project_id)
-        _EE_INIT_PROJECT = project_id
-
-
-def _initialize_ee(project_id: str) -> None:
-    sa_email = os.environ.get("GEE_SERVICE_ACCOUNT")
-    sa_json = os.environ.get("GEE_SA_JSON")
-    sa_key_file = os.environ.get("GEE_SA_KEY_FILE")
-
-    if sa_json:
-        email = sa_email or json.loads(sa_json).get("client_email")
-        ee.Initialize(ee.ServiceAccountCredentials(email, key_data=sa_json), project=project_id)
-    elif sa_key_file:
-        ee.Initialize(
-            ee.ServiceAccountCredentials(sa_email, key_file=sa_key_file), project=project_id
-        )
-    else:
-        # Application Default Credentials first: this covers Cloud Run's attached
-        # service account (keyless, what prod uses), GCE, Cloud Build and Workload
-        # Identity Federation. The previous K_SERVICE sniff only matched Cloud Run.
-        # Falls through to local `earthengine authenticate` creds when ADC is absent.
-        try:
-            import google.auth
-
-            adc, _ = google.auth.default(
-                scopes=[
-                    "https://www.googleapis.com/auth/earthengine",
-                    "https://www.googleapis.com/auth/cloud-platform",
-                ]
-            )
-            ee.Initialize(adc, project=project_id)
-            return
-        except Exception:
-            pass
-        ee.Initialize(project=project_id)
-
-
-def _build_roof_layers(
-    aoi: ee.Geometry,
-    roof_year: int | None,
-    presence_threshold: float,
-    min_height_m: float,
-) -> tuple[ee.Image, ee.Image, ee.Image]:
-    """
-    Thin adapter over solaris.gee.layers.build_roof_layers, kept so the existing
-    call sites keep their tuple-unpacking shape.
-    """
-    return tuple(
-        build_roof_layers(
-            aoi,
-            roof_year=roof_year,
-            presence_threshold=presence_threshold,
-            min_height_m=min_height_m,
-        )
-    )
-
-
-def _select_target_building(
-    aoi: ee.Geometry,
-    coords: list[list[float]],
-    centroid: ee.Geometry,
-    confidence: float,
-) -> tuple[ee.Geometry, dict[str, Any], dict[str, Any], str, str | None]:
-    """
-    Grab the building footprint under the click. Returns
-    (building_geom, building_props, building_geojson_feature, source, warning).
-    """
-    tb = (
-        get_open_buildings_vector(aoi, confidence_threshold=confidence)
-        .filterBounds(centroid)
-        .first()
-        .getInfo()
-    )
-    source = "vector_centroid_point"
-    warning: str | None = None
-
-    # a bare point misses when the click lands on an edge / low-confidence footprint,
-    # so nudge out 30 m, and if that still finds nothing just use the whole AOI
-    if tb is None:
-        try:
-            tb = (
-                get_open_buildings_vector(aoi, confidence_threshold=confidence)
-                .filterBounds(centroid.buffer(30))
-                .first()
-                .getInfo()
-            )
-            if tb is not None:
-                source = "vector_centroid_buffer30m"
-        except Exception:
-            tb = None
-
-    if tb is None:
-        source = "aoi_fallback"
-        warning = "No Open Buildings polygon found at the selected point; using the AOI roof mask for calculations."
-        building_geom = aoi
-        building_props = {"confidence": confidence, "area_in_meters": None}
-        building_geojson_feature = {
-            "type": "Feature",
-            "geometry": {"type": "Polygon", "coordinates": [coords]},
-            "properties": {},
-        }
-    else:
-        building_geom = ee.Feature(tb).geometry()
-        building_props = tb.get("properties", {})
-        building_geojson_feature = tb
-
-    return building_geom, building_props, building_geojson_feature, source, warning
-
-
-def _ee_tile_template(image: ee.Image, vis: dict[str, Any]) -> str:
-    """
-    Return Map ID tile template URL for an EE image.
-    This yields a URL like: https://earthengine.googleapis.com/v1alpha/projects/.../maps/{mapid}/tiles/{z}/{x}/{y}
-    """
-    m = image.getMapId(vis)
-    return m["tile_fetcher"].url_format
-
-
 @app.post("/api/tiles")
 def tiles(req: TilesRequest) -> dict[str, Any]:
     """
@@ -645,17 +233,17 @@ def tiles(req: TilesRequest) -> dict[str, Any]:
         except ValueError as ex:
             raise HTTPException(status_code=400, detail=str(ex)) from ex
 
-        _ensure_ee()
-        coords, aoi = _aoi_from_req(req)
+        deps.ensure_ee()
+        coords, aoi = deps.aoi_from_req(req)
         centroid = aoi.centroid(1)
-        lon_deg, lat_deg = _centroid_lon_lat(centroid)
+        lon_deg, lat_deg = deps.centroid_lon_lat(centroid)
         s, e = win["start_date"], win["end_date_exclusive"]
 
-        _, building_height, roof_mask = _build_roof_layers(
+        _, building_height, roof_mask = deps.build_roof_layers(
             aoi, req.roof_year, req.presence_threshold, req.min_height_m
         )
 
-        solar_positions = _solar_positions_for_window(lat_deg, lon_deg, win)
+        solar_positions = deps.solar_positions_for_window(lat_deg, lon_deg, win)
         shadow_freq = ShadowPenalty.frequency(building_height, solar_positions=solar_positions)
         svf_img = SkyViewFactor.image(building_height)
 
@@ -723,7 +311,7 @@ def tiles(req: TilesRequest) -> dict[str, Any]:
                 "palette": ["0b1020", "2563eb", "22c55e", "f59e0b"],
             }
 
-        url = _ee_tile_template(img, vis)
+        url = deps.ee_tile_template(img, vis)
         # Approx bounds from request polygon (lon,lat)
         lons = [p[0] for p in coords]
         lats = [p[1] for p in coords]
@@ -755,8 +343,8 @@ def buildings(req: BuildingsRequest) -> dict[str, Any]:
     Intended for map rendering / selection (open-data-only).
     """
     try:
-        _ensure_ee()
-        coords, aoi = _aoi_from_req(req)
+        deps.ensure_ee()
+        coords, aoi = deps.aoi_from_req(req)
         fc = get_open_buildings_vector(aoi, confidence_threshold=req.building_confidence).limit(
             req.limit
         )
@@ -813,10 +401,10 @@ def compute_yield(req: YieldRequest) -> dict[str, Any]:
         except ValueError as ex:
             raise HTTPException(status_code=400, detail=str(ex)) from ex
 
-        _ensure_ee()
-        coords, aoi = _aoi_from_req(req)
+        deps.ensure_ee()
+        coords, aoi = deps.aoi_from_req(req)
         centroid = aoi.centroid(1)
-        lon_deg, lat_deg = _centroid_lon_lat(centroid)
+        lon_deg, lat_deg = deps.centroid_lon_lat(centroid)
         s, e = win["start_date"], win["end_date_exclusive"]
 
         ghi_info = sample_era5_period_ghi_kwh_m2_at_point(centroid, s, e, scale_m=ERA5_SCALE_M)
@@ -827,9 +415,9 @@ def compute_yield(req: YieldRequest) -> dict[str, Any]:
                 detail="Could not sample ERA5 GHI for the selected period at centroid.",
             )
 
-        solar_positions = _solar_positions_for_window(lat_deg, lon_deg, win)
+        solar_positions = deps.solar_positions_for_window(lat_deg, lon_deg, win)
 
-        _, building_height, roof_mask = _build_roof_layers(
+        _, building_height, roof_mask = deps.build_roof_layers(
             aoi, req.roof_year, req.presence_threshold, req.min_height_m
         )
 
@@ -871,7 +459,7 @@ def compute_yield(req: YieldRequest) -> dict[str, Any]:
             building_geojson_feature,
             building_selection_source,
             selection_warning,
-        ) = _select_target_building(aoi, coords, centroid, req.building_confidence)
+        ) = deps.select_target_building(aoi, coords, centroid, req.building_confidence)
 
         # Each stage adds one more penalty on top of the last, so the per-stage drops
         # line up: baseline (raw GHI) -> +shadow -> +sky-view -> +uhi -> +soiling(=net).
@@ -1173,67 +761,6 @@ def compute_yield(req: YieldRequest) -> dict[str, Any]:
         raise HTTPException(status_code=500, detail=str(e)) from e
 
 
-_MONTH_ABBR = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
-
-
-def _cap_positions(pos: list[tuple]) -> list[tuple]:
-    # same thinning /api/yield does, so the curve's shadow matches the headline number
-    return pos[::2] if len(pos) > 42 else pos
-
-
-def _series_layout(
-    mode: str,
-    win: dict[str, Any],
-    lat_deg: float,
-    lon_deg: float,
-) -> tuple[list[str], list[tuple[str, str, list[tuple]]], list[int]]:
-    """
-    Work out the points on the curve. Returns (labels, items, bin_of): the x labels,
-    the (start, end, sun-positions) chunks to evaluate, and which output bucket each
-    chunk lands in -- that mapping is 1:1 except in monthly mode, where days collapse
-    into weeks.
-    """
-    year = win.get("calendar_year")
-
-    if mode == "yearly":
-        items = []
-        for m in range(1, 13):
-            s = f"{year}-{m:02d}-01"
-            e = f"{year + 1}-01-01" if m == 12 else f"{year}-{m + 1:02d}-01"
-            items.append((s, e, _cap_positions(solar_positions_monthly(lat_deg, lon_deg, year, m))))
-        return list(_MONTH_ABBR), items, list(range(12))
-
-    if mode == "quarterly":
-        q = int(win["quarter"])
-        months = {1: [1, 2, 3], 2: [4, 5, 6], 3: [7, 8, 9], 4: [10, 11, 12]}[q]
-        items, labels = [], []
-        for m in months:
-            s = f"{year}-{m:02d}-01"
-            e = f"{year + 1}-01-01" if m == 12 else f"{year}-{m + 1:02d}-01"
-            items.append((s, e, _cap_positions(solar_positions_monthly(lat_deg, lon_deg, year, m))))
-            labels.append(_MONTH_ABBR[m - 1])
-        return labels, items, list(range(len(items)))
-
-    if mode == "monthly":
-        m = int(win["month"])
-        first = date(year, m, 1)
-        nxt = date(year + 1, 1, 1) if m == 12 else date(year, m + 1, 1)
-        ndays = (nxt - first).days
-        items, bin_of = [], []
-        for d in range(1, ndays + 1):
-            day = date(year, m, d)
-            s = day.isoformat()
-            e = (day + timedelta(days=1)).isoformat()
-            items.append((s, e, _cap_positions(solar_positions_single_day(lat_deg, lon_deg, day))))
-            bin_of.append(min(4, (d - 1) // 7))
-        return ["W1", "W2", "W3", "W4", "W5"], items, bin_of
-
-    # daily: a single point
-    s, e = win["start_date"], win["end_date_exclusive"]
-    d0 = date.fromisoformat(s)
-    return [s], [(s, e, _cap_positions(solar_positions_single_day(lat_deg, lon_deg, d0)))], [0]
-
-
 @app.post("/api/series")
 def compute_series(req: YieldRequest) -> dict[str, Any]:
     """
@@ -1265,10 +792,10 @@ def compute_series(req: YieldRequest) -> dict[str, Any]:
         except ValueError as ex:
             raise HTTPException(status_code=400, detail=str(ex)) from ex
 
-        _ensure_ee()
-        coords, aoi = _aoi_from_req(req)
+        deps.ensure_ee()
+        coords, aoi = deps.aoi_from_req(req)
         centroid = aoi.centroid(1)
-        lon_deg, lat_deg = _centroid_lon_lat(centroid)
+        lon_deg, lat_deg = deps.centroid_lon_lat(centroid)
         mode = win["mode"]
 
         labels, items, bin_of = _series_layout(mode, win, lat_deg, lon_deg)
@@ -1280,10 +807,10 @@ def compute_series(req: YieldRequest) -> dict[str, Any]:
                 "values": [0.0] * len(labels),
             }
 
-        _, building_height, roof_mask = _build_roof_layers(
+        _, building_height, roof_mask = deps.build_roof_layers(
             aoi, req.roof_year, req.presence_threshold, req.min_height_m
         )
-        building_geom, _, _, _, _ = _select_target_building(
+        building_geom, _, _, _, _ = deps.select_target_building(
             aoi, coords, centroid, req.building_confidence
         )
         svf_img = SkyViewFactor.image(building_height)
@@ -1352,6 +879,15 @@ def compute_series(req: YieldRequest) -> dict[str, Any]:
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e)) from e
+
+
+# Resolve the static directory relative to this file, not the process cwd --
+# a relative path here meant the server only worked when launched from the
+# repo root and 500'd otherwise. Guarded so that a checkout without a built
+# frontend can still import the app (tests, CI).
+_STATIC_DIR = Path(__file__).resolve().parent / "static"
+if _STATIC_DIR.is_dir():
+    app.mount("/", StaticFiles(directory=str(_STATIC_DIR), html=True), name="static")
 
 
 # Resolve the static directory relative to this file, not the process cwd --

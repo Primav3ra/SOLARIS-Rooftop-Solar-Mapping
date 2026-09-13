@@ -106,8 +106,10 @@ module = ["ee.*", "google.auth.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]
+# "." puts the repo root on sys.path so tests can import the shared fakes
+# (tests.fakes.fake_ee) without any sys.path manipulation inside test files.
 testpaths = ["tests"]
-pythonpath = ["src"]
+pythonpath = ["src", "."]
 # Default run is offline: no Earth Engine credentials, no network. A fresh
 # clone must get a green `pytest` with no GCP account.
 addopts = "-m 'not gee and not network' --strict-markers -q"

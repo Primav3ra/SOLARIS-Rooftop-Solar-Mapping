@@ -22,13 +22,10 @@ warnings.filterwarnings("ignore", category=DeprecationWarning)
 
 from fastapi.testclient import TestClient
 
-from solaris.api.app import (
-    TilesRequest,
-    YieldRequest,
-    app,
-    gee_project_id,
-    resolve_temporal_window,
-)
+from solaris.api.app import app
+from solaris.api.deps import gee_project_id
+from solaris.api.schemas import TilesRequest, YieldRequest
+from solaris.api.windows import resolve_temporal_window
 from solaris.core import constants as C
 
 #: Endpoints that take an AOI and therefore share the bounds validators.
@@ -57,7 +54,12 @@ def _forbid_earth_engine(monkeypatch):
             "this test reached Earth Engine; offline tests must not make network calls"
         )
 
-    monkeypatch.setattr("solaris.api.app._ensure_ee", _boom)
+    # Patch the module the handlers actually call through. They use
+    # `deps.ensure_ee(...)` rather than a by-name import precisely so that this
+    # works; patching `solaris.api.app._ensure_ee` would be silently
+    # ineffective, which is the failure mode `test_guard_actually_fires` below
+    # exists to catch.
+    monkeypatch.setattr("solaris.api.deps.ensure_ee", _boom)
 
 
 @pytest.fixture(scope="module")
@@ -73,6 +75,21 @@ def _square(lat: float, lon: float, half: float):
         [lon - half, lat + half],
         [lon - half, lat - half],
     ]
+
+
+class TestTheNetworkGuardWorks:
+    """
+    The guard above is only useful if it is wired to the module the handlers
+    call through. After the router split it briefly was not, and nothing failed
+    -- every other test in this file short-circuits in pydantic before reaching
+    Earth Engine, so a broken guard is invisible. This test makes it visible.
+    """
+
+    def test_guard_actually_fires(self, client):
+        """A request that passes validation must trip the guard, not the network."""
+        response = client.post("/api/yield", json={"lat": 28.6, "lon": 77.2})
+        assert response.status_code == 500
+        assert "reached Earth Engine" in response.json()["detail"]
 
 
 class TestMetaEndpoints:

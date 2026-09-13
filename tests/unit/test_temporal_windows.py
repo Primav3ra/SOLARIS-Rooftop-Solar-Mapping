@@ -18,7 +18,7 @@ from datetime import date
 
 import pytest
 
-from solaris.api.app import (
+from solaris.api.windows import (
     _last_complete_calendar_year,
     _parse_daily_window,
     _quarter_bounds,
