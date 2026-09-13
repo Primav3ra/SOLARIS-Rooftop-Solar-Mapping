@@ -20,7 +20,7 @@ from __future__ import annotations
 # ---------------------------------------------------------------------------
 
 #: Bump on any change to the penalty maths or the PV conversion chain.
-ALGO_VERSION = "1"
+ALGO_VERSION = "2"  # Phase 3: shadow/sky-view geometry, QA masking, clamps
 
 #: Bump when a GEE collection id, band name or default vintage changes.
 DATASET_VERSION = "1"

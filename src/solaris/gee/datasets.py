@@ -5,7 +5,7 @@ aren't scattered across the codebase.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
 
 import ee
 
@@ -41,8 +41,11 @@ def get_open_buildings_temporal(aoi: ee.Geometry, year: int | None = None) -> ee
     """
     col = ee.ImageCollection(CATALOG["open_buildings_temporal"]).filterBounds(aoi)
     if year is not None:
-        start_ms = int(datetime(year, 1, 1).timestamp() * 1000)
-        end_ms = int(datetime(year + 1, 1, 1).timestamp() * 1000)
+        # UTC-anchored: datetime(...).timestamp() uses the *host machine's*
+        # local timezone, so the vintage window shifted by the developer's UTC
+        # offset and results were not reproducible across machines.
+        start_ms = int(datetime(year, 1, 1, tzinfo=UTC).timestamp() * 1000)
+        end_ms = int(datetime(year + 1, 1, 1, tzinfo=UTC).timestamp() * 1000)
         col = col.filter(
             ee.Filter.And(
                 ee.Filter.gte("system:time_start", start_ms),

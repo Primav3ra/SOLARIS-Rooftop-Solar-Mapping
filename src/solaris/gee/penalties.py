@@ -128,29 +128,120 @@ def _make_solar_positions() -> list[tuple[float, float, float]]:
 # ---------------------------------------------------------------------------
 
 
+def _shadow_sample_distances(
+    pixel_size_m: float = 4.0,
+    near_field_m: float = 64.0,
+    max_m: float = 400.0,
+    growth: float = 1.5,
+) -> tuple[float, ...]:
+    """
+    Distances (m) at which the shadow trace tests for occlusion: one pixel
+    apart through the near field, then geometrically spaced out to ``max_m``.
+    """
+    distances: list[float] = []
+    d = pixel_size_m
+    while d <= near_field_m:
+        distances.append(round(d, 3))
+        d += pixel_size_m
+    while d <= max_m:
+        distances.append(round(d, 3))
+        d *= growth
+    if distances and distances[-1] < max_m:
+        distances.append(max_m)
+    return tuple(distances)
+
+
 class ShadowPenalty:
     """
-    2.5D shadow model off the Open Buildings height raster, weighted by how much sun
-    each position actually delivers.
+    2.5D shadow model over the Open Buildings height raster, insolation-weighted.
 
-    Per sun position (alt, az) a building of height H throws a shadow H / tan(alt) metres
-    long. Doing that exactly per pixel is too slow in EE, so it's approximated: project
-    the shadow-length image along the shadow direction, focal_max over the same radius to
-    catch any caster in range, and flag a pixel as shadowed when a taller neighbour reaches
-    it (the height check is what stops a building shadowing itself).
+    Method
+    ------
+    A pixel is shadowed at sun position ``(alt, az)`` when some point along the
+    direction *towards* the sun is tall enough to occlude it::
 
-    Positions are weighted by sin(altitude), so low winter/morning sun -- long shadows but
-    little energy -- doesn't dominate the yearly figure.
+        shadowed  <=>  exists d :  H(p + d * u_sun) - H(p)  >  d * tan(alt)
 
-    Rough edges: the focal_max kernel is a circle rather than directional, so shadow area
-    runs maybe 5-10% high; and shadows only take out the direct beam -- diffuse is dealt
-    with elsewhere (beam_fraction in net_irradiance_image + the SkyViewFactor layer), not
-    here.
+    where ``u_sun = (sin az, cos az)`` and ``d`` runs over SAMPLE_DISTANCES_M.
+    This is the standard DSM shadow trace (Ratti & Richens 1999): subtracting
+    the pixel's own height makes it self-consistent, so a roof is never
+    shadowed by a neighbour of equal or lower height.
+
+    Sun positions are weighted by sin(altitude), so low winter and morning sun
+    -- long shadows, little energy -- does not dominate an annual figure.
+
+    What this replaced, and why
+    ---------------------------
+    The previous implementation projected a shadow-length image by a *fixed*
+    offset, took ``focal_max`` over a **circular** kernel, and then tested
+    caster height at a single fixed offset. Three problems compounded:
+
+    1. The offsets were computed in pixels but passed to ``translate()``, whose
+       units default to **metres**, so the intended 400 m reach was 100 m.
+    2. The circular kernel made the search isotropic -- azimuth entered only
+       through one rigid translate -- while the fixed-offset height test meant
+       only a single pixel could ever be flagged. Measured on a 40 m tower with
+       the sun at 45 deg: exactly one shadowed pixel, 25 px away, instead of a
+       10 px shadow adjacent to the building. Shadow area did not respond to
+       sun altitude at all.
+    3. A pixel-denominated ``focal_max`` kernel resolves against the projection
+       of the *request*, so the same expression covered a different physical
+       area in /api/yield (reduced at 4 m) than in /api/tiles (a coarse tile
+       scale).
+
+    Every distance here is denominated in **metres**, which removes (1) and (3)
+    by construction rather than by remembering to reproject.
+
+    Remaining approximations
+    ------------------------
+    * Occlusion is sampled at discrete distances, so a caster that only
+      occludes between two samples is missed. Spacing is one pixel out to 16 m
+      and widens with distance, where the subtended angle changes slowly.
+    * Shadows attenuate the direct beam only. Diffuse is handled by
+      :class:`SkyViewFactor` and the beam/diffuse split in
+      :func:`net_irradiance_image`.
+    * Vegetation and non-building structures are absent from the height raster.
+    * **Edge convention.** The height raster is clipped to the AOI, so a
+      neighbour sampled beyond the boundary is masked. Such a neighbour is
+      treated as ground level (``unmask(0)``) -- i.e. no obstruction -- because
+      the alternative, propagating the mask, silently drops those roof pixels
+      from the reduction entirely. Measured on a 64x64 test grid before this
+      was handled: 75% of sky-view pixels came back masked, and the reported
+      energy fell 58% purely from the excluded pixels. The cost is that
+      shadowing and sky-view obstruction are underestimated in a band one
+      search-radius wide inside the AOI edge, so buffer the AOI when a boundary
+      building matters.
     """
 
-    MAX_SHADOW_PIXELS: int = 100  # 100 px * 4 m/px = 400 m maximum shadow reach
+    #: Maximum occlusion search distance (m).
+    MAX_SHADOW_M: float = 400.0
 
-    # Default positions (Delhi 28.6 N); overridden by dynamic solar_geometry module
+    #: Tallest building the search bothers to look for (m). Covers essentially
+    #: all Indian urban fabric, and lets each sun position prune distances
+    #: beyond ``MAX_BUILDING_HEIGHT_M / tan(alt)`` -- nothing shorter than this
+    #: could cast that far. With the sun high the list collapses to a handful of
+    #: steps; only low sun needs the full reach. Without this the trace would
+    #: emit ~40 translate operations per sun position regardless of geometry.
+    MAX_BUILDING_HEIGHT_M: float = 150.0
+
+    #: Out to here, occlusion is tested at every pixel. Most urban shadowing is
+    #: near-field, and coarser spacing leaves visible gaps: with 4/8/12/16/24/32 m
+    #: steps a 40 m tower produced 6 shadowed pixels of the 10 it should cast,
+    #: missing those at 20, 28 and 36 m.
+    NEAR_FIELD_M: float = 128.0
+
+    #: Geometric growth factor beyond the near field, where the angle a caster
+    #: subtends changes slowly with distance.
+    FAR_FIELD_GROWTH: float = 1.2
+
+    #: Populated just after the class body, from _shadow_sample_distances().
+    SAMPLE_DISTANCES_M: tuple[float, ...] = ()
+
+    #: Altitude floor (deg). Below this the shadow length diverges and the
+    #: insolation weight is negligible anyway.
+    MIN_ALTITUDE_DEG: float = 2.0
+
+    # Default positions (Delhi 28.6 N); overridden by the solar_geometry module.
     _DELHI_POSITIONS: list[tuple[float, float, float]] = _make_solar_positions()
 
     @staticmethod
@@ -160,25 +251,43 @@ class ShadowPenalty:
         az_deg: float,
         pixel_size_m: float = 4.0,
     ) -> ee.Image:
-        """Binary shadow mask (1=shadow, 0=sunlit) for one solar geometry."""
-        alt_rad = math.radians(max(alt_deg, 2.0))
+        """
+        Binary shadow mask (1 = shadow, 0 = sunlit) for one sun position.
+
+        ``pixel_size_m`` is accepted for call-site compatibility but no longer
+        needed: the trace is denominated in metres.
+        """
+        alt_rad = math.radians(max(alt_deg, ShadowPenalty.MIN_ALTITUDE_DEG))
         tan_alt = math.tan(alt_rad)
 
-        shadow_len_px = building_height.divide(tan_alt * pixel_size_m)
+        # Unit vector towards the sun, in (east, north).
+        az_rad = math.radians(az_deg)
+        ux, uy = math.sin(az_rad), math.cos(az_rad)
 
-        # Unit vector pointing in the shadow direction (opposite to sun azimuth)
-        shadow_az_rad = math.radians(az_deg + 180.0)
-        dx = math.sin(shadow_az_rad) * ShadowPenalty.MAX_SHADOW_PIXELS
-        dy = math.cos(shadow_az_rad) * ShadowPenalty.MAX_SHADOW_PIXELS
-
-        translated = shadow_len_px.translate(dx, dy)
-        kernel = ee.Kernel.circle(
-            radius=ShadowPenalty.MAX_SHADOW_PIXELS, units="pixels", normalize=False
+        # No building under MAX_BUILDING_HEIGHT_M can occlude from further than
+        # this, so testing beyond it is wasted work.
+        reach_m = min(
+            ShadowPenalty.MAX_SHADOW_M,
+            ShadowPenalty.MAX_BUILDING_HEIGHT_M / tan_alt,
         )
-        dilated = translated.focal_max(kernel=kernel)
-        caster_h = building_height.translate(dx, dy)
 
-        return dilated.gte(1.0).And(caster_h.gt(building_height)).rename("in_shadow").toUint8()
+        occluded: ee.Image | None = None
+        for distance_m in ShadowPenalty.SAMPLE_DISTANCES_M:
+            if distance_m > reach_m:
+                break
+            # translate() shifts content, so translated[p] == original[p - shift].
+            # Sampling H(p + d*u) therefore needs a shift of -d*u.
+            neighbour = building_height.translate(
+                -ux * distance_m, -uy * distance_m, units="meters"
+            ).unmask(0.0)
+            rise = neighbour.subtract(building_height)
+            hit = rise.gt(distance_m * tan_alt)
+            occluded = hit if occluded is None else occluded.Or(hit)
+
+        if occluded is None:  # pragma: no cover - SAMPLE_DISTANCES_M is non-empty
+            occluded = ee.Image(0)
+
+        return occluded.rename("in_shadow").toUint8()
 
     @staticmethod
     def frequency(
@@ -187,17 +296,26 @@ class ShadowPenalty:
         pixel_size_m: float = 4.0,
     ) -> ee.Image:
         """
-        Insolation-weighted shadow frequency image [0, 1]. Band: shadow_frequency.
-        0 = never in shadow; 1 = always in shadow across all weighted positions.
+        Insolation-weighted shadow frequency in [0, 1]. Band: shadow_frequency.
+
+        0 = never shadowed; 1 = shadowed at every weighted sun position.
         """
         if solar_positions is None:
             pwt = ShadowPenalty._DELHI_POSITIONS
+        elif not solar_positions:
+            # Reachable for a high-latitude winter window, where the altitude
+            # floor filters every position. Previously an IndexError from
+            # indexing [0] before the truthiness check.
+            raise ValueError(
+                "solar_positions is empty: no sun position clears the "
+                f"{ShadowPenalty.MIN_ALTITUDE_DEG} deg altitude floor for this "
+                "window and latitude"
+            )
         elif len(solar_positions[0]) >= 3:
-            # solar_positions entries are expected as:
-            #   (alt_deg, az_deg_from_north, weight, ...metadata)
+            # (alt_deg, az_deg_from_north, weight, ...metadata)
             pwt = [(a, z, w) for (a, z, w, *_rest) in solar_positions]
         else:
-            # Fallback: entries do not include weights (e.g. (alt, az)).
+            # Entries without weights, e.g. (alt, az): weight them uniformly.
             n = len(solar_positions)
             pwt = [(a, z, 1.0 / n) for (a, z, *_rest) in solar_positions]
 
@@ -211,6 +329,13 @@ class ShadowPenalty:
         for img in imgs[1:]:
             result = result.add(img)
         return result.rename("shadow_frequency")
+
+
+ShadowPenalty.SAMPLE_DISTANCES_M = _shadow_sample_distances(
+    near_field_m=ShadowPenalty.NEAR_FIELD_M,
+    max_m=ShadowPenalty.MAX_SHADOW_M,
+    growth=ShadowPenalty.FAR_FIELD_GROWTH,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -236,8 +361,19 @@ class SkyViewFactor:
     """
 
     N_AZIMUTH: int = 8
-    # how far out to look, in pixels (x4m). Roughly log-spaced -- the near buildings set
-    # the horizon; anything far away barely subtends an angle.
+
+    #: Horizon sampling distances, in **metres**. Roughly log-spaced: near
+    #: buildings set the horizon, distant ones barely subtend an angle.
+    #:
+    #: These were previously pixel counts passed to ``translate()``, whose units
+    #: default to metres -- so the rise was sampled 4x nearer than the distance
+    #: it was divided by, understating every horizon angle and biasing SVF
+    #: towards 1, i.e. towards no diffuse penalty at all. Measured for a 10 m
+    #: wall 4 m away: 0.964888 against an analytic 0.892241, exactly the value
+    #: obtained by substituting 16 m for 4 m.
+    DIST_M: tuple[float, ...] = (4.0, 8.0, 16.0, 32.0, 64.0)
+
+    #: Retained for backwards compatibility with callers that report it.
     DIST_PX: tuple[int, ...] = (1, 2, 4, 8, 16)
 
     @staticmethod
@@ -245,26 +381,32 @@ class SkyViewFactor:
         building_height: ee.Image,
         pixel_size_m: float = 4.0,
         n_azimuth: int | None = None,
-        dist_px: tuple[int, ...] | None = None,
+        dist_m: tuple[float, ...] | None = None,
     ) -> ee.Image:
-        """Per-pixel Sky View Factor [0, 1]. Band: sky_view_factor."""
+        """
+        Per-pixel Sky View Factor in [0, 1]. Band: sky_view_factor.
+
+        ``pixel_size_m`` is accepted for call-site compatibility but unused --
+        every distance is in metres, which also makes the result independent of
+        the scale the image is later requested at.
+        """
         n_az = int(n_azimuth or SkyViewFactor.N_AZIMUTH)
-        dists = dist_px or SkyViewFactor.DIST_PX
+        dists = dist_m or SkyViewFactor.DIST_M
 
         sin2_terms: list[ee.Image] = []
         for k in range(n_az):
             az = 2.0 * math.pi * k / n_az
             ux, uy = math.sin(az), math.cos(az)
 
-            # walk outward in this direction, keep the steepest obstruction
+            # Walk outward along this azimuth, keeping the steepest obstruction.
             angle_imgs: list[ee.Image] = []
-            for d in dists:
-                dm = float(d) * pixel_size_m
-                neighbour = building_height.translate(ux * d, uy * d)
-                rise = neighbour.subtract(building_height).max(
-                    0.0
-                )  # ignore anything shorter than us
-                angle_imgs.append(rise.divide(dm).atan())
+            for distance_m in dists:
+                neighbour = building_height.translate(
+                    -ux * distance_m, -uy * distance_m, units="meters"
+                ).unmask(0.0)
+                # Only taller neighbours occlude, so clamp the rise at zero.
+                rise = neighbour.subtract(building_height).max(0.0)
+                angle_imgs.append(rise.divide(distance_m).atan())
             horizon = angle_imgs[0]
             for a in angle_imgs[1:]:
                 horizon = horizon.max(a)
@@ -306,8 +448,37 @@ class UHIPenalty:
     LST_DAY_BAND = "LST_Day_1km"
     LST_SCALE = 0.02  # raw integer * 0.02 = Kelvin (MODIS scale factor)
     K_TO_C_OFFSET = 273.15
-    BACKGROUND_KERNEL_PX = 30  # 30 km at 1 km/pixel (large-city UHI footprint; see class docstring)
+    #: Rural-background window radius, in **metres**. Deliberately large: for a
+    #: sprawling city a tighter window sits entirely inside the heat island and
+    #: the anomaly collapses towards zero.
+    #:
+    #: This was previously 30 *pixels*, which only meant 30 km when the request
+    #: happened to be at MODIS' 1 km scale. A pixel-denominated kernel resolves
+    #: against the projection of the request, so the background window -- and
+    #: therefore the reported heat-island intensity -- moved with the reduce
+    #: scale. Measured on a synthetic hot spot: delta_T read 2.78 C at scale=4
+    #: against 4.94 C at scale=100, a 78% swing from the request scale alone.
+    BACKGROUND_KERNEL_M = 30_000.0
+
+    #: Retained so callers that report the window size keep working.
+    BACKGROUND_KERNEL_PX = 30
+
     DEFAULT_TEMP_COEFF = -0.004  # /degC, crystalline silicon (IEC 60891)
+
+    #: Surface-to-air heat-island transfer coefficient (dimensionless).
+    #:
+    #: MODIS measures *land surface* temperature, but a PV module responds to
+    #: *air* temperature. Daytime surface UHI in Indian cities typically runs
+    #: 2-3x the canopy-layer air UHI, so charging the full LST anomaly to the
+    #: cell-temperature derate overstates the penalty by roughly that factor.
+    #:
+    #: 0.3 is the mid-point of the commonly reported range. It is an explicit,
+    #: uncertain parameter rather than an implicit assumption -- previously the
+    #: LST anomaly was used directly, which silently conflated the two and,
+    #: combined with the temperature loss already inside PERFORMANCE_RATIO,
+    #: produced two errors of opposite sign that neither cancelled nor was
+    #: measured. See docs/limitations.md (P4).
+    SURFACE_TO_AIR_RATIO = 0.3
 
     @classmethod
     def _lst_celsius(cls, aoi: ee.Geometry, year: int) -> ee.Image:
@@ -330,6 +501,7 @@ class UHIPenalty:
         start_date: str,
         temp_coeff: float = DEFAULT_TEMP_COEFF,
         scale_m: float = 1000.0,
+        surface_to_air_ratio: float = SURFACE_TO_AIR_RATIO,
     ) -> dict[str, Any]:
         """
         UHI intensity + derate for the AOI. start_date just supplies the year for the
@@ -340,11 +512,12 @@ class UHIPenalty:
         year = int(start_date[:4])
         lst = cls._lst_celsius(aoi, year)
 
-        # 30 km focal mean as rural/background reference
+        # Rural/background reference. Denominated in metres so the window is
+        # 30 km regardless of the scale the image is later requested at.
         background = lst.focal_mean(
-            radius=cls.BACKGROUND_KERNEL_PX,
+            radius=cls.BACKGROUND_KERNEL_M,
             kernelType="circle",
-            units="pixels",
+            units="meters",
         )
         uhi_anomaly = lst.subtract(background).rename("uhi_anomaly")
 
@@ -374,17 +547,23 @@ class UHIPenalty:
         delta_t = float(delta_t)
         urban_lst = float(urban_lst)
         background_lst = urban_lst - delta_t
-        derate = 1.0 + temp_coeff * delta_t
+
+        # The derate responds to *air* temperature, so scale the surface
+        # anomaly down by SURFACE_TO_AIR_RATIO before applying gamma.
+        delta_t_air = delta_t * surface_to_air_ratio
+        derate = 1.0 + temp_coeff * delta_t_air
 
         return {
             "delta_t_uhi_celsius": round(delta_t, 3),
+            "delta_t_air_celsius": round(delta_t_air, 3),
+            "surface_to_air_ratio": surface_to_air_ratio,
             "mean_lst_day_celsius": round(urban_lst, 2),
             "background_lst_celsius": round(background_lst, 2),
             "uhi_derate_factor": round(derate, 5),
             "temp_coeff_per_c": temp_coeff,
             "source": source,
             "modis_collection": cls.MODIS_COLLECTION,
-            "background_kernel_km": cls.BACKGROUND_KERNEL_PX,
+            "background_kernel_km": cls.BACKGROUND_KERNEL_M / 1000.0,
             "accounting_year": year,
             "scale_m": scale_m,
         }
@@ -417,19 +596,52 @@ class SoilingPenalty:
     """
 
     MAIAC_COLLECTION = "MODIS/061/MCD19A2_GRANULES"
+    QA_BAND = "AOD_QA"
+
+    #: AOD_QA bits 0-2 are the cloud mask; 001 means "clear". MCD19A2_GRANULES
+    #: ships **unmasked** retrievals, so without this the annual mean folds in
+    #: cloudy and cloud-shadowed pixels. The class docstring previously claimed
+    #: "GEE's QA masking drops the cloudy days", which was simply not true --
+    #: nothing applied a mask.
+    QA_CLOUD_MASK_BITS = 0b111
+    QA_CLOUD_CLEAR = 0b001
     AOD_BAND = "Optical_Depth_055"  # 550 nm standard reference; scale factor 0.001
     AOD_SCALE = 0.001
     SOILING_COEFFICIENT = 0.08  # fractional loss per unit mean AOD per year
     # (Kimber et al. 2006; Sayyah et al. 2014)
 
+    #: Floor on the retention factor.
+    #:
+    #: ``loss = mean_AOD * 0.08`` was applied uncapped, so any AOD above 12.5
+    #: produced a *negative* retention factor and therefore negative generated
+    #: energy. Measured soiling in Delhi is 0.24-0.47 %/day with 7-30 day
+    #: cleaning, i.e. a few per cent to ~10% annually, so a retention below 0.5
+    #: is outside anything the literature supports and indicates bad input
+    #: rather than a real loss. Binding the floor is logged in the returned
+    #: dict so it is never silent.
+    MIN_RETENTION = 0.5
+
     @classmethod
     def aod_image(cls, aoi: ee.Geometry, year: int) -> ee.Image:
-        """Annual mean AOD at 550 nm for the given calendar year. Band: AOD_550nm."""
+        """
+        Annual mean AOD at 550 nm, QA-masked, for the given calendar year.
+        Band: AOD_550nm.
+
+        Only retrievals whose AOD_QA cloud mask reads "clear" contribute. Every
+        other pixel is masked, so it is excluded from the mean rather than
+        averaged in -- which is what ``.mean()`` on the raw band was doing.
+        """
+
+        def _keep_clear(image: ee.Image) -> ee.Image:
+            qa = image.select(cls.QA_BAND)
+            clear = qa.bitwiseAnd(cls.QA_CLOUD_MASK_BITS).eq(cls.QA_CLOUD_CLEAR)
+            return image.select(cls.AOD_BAND).updateMask(clear)
+
         return (
             ee.ImageCollection(cls.MAIAC_COLLECTION)
             .filterBounds(aoi)
             .filterDate(f"{year}-01-01", f"{year + 1}-01-01")
-            .select(cls.AOD_BAND)
+            .map(_keep_clear)
             .mean()
             .multiply(cls.AOD_SCALE)
             .rename("AOD_550nm")
@@ -463,10 +675,16 @@ class SoilingPenalty:
         loss = mean_aod * soiling_coefficient
         retention = 1.0 - loss
 
+        clamped = retention < cls.MIN_RETENTION
+        if clamped:
+            retention = cls.MIN_RETENTION
+            loss = 1.0 - retention
+
         return {
             "mean_aod_550nm": round(mean_aod, 4),
             "soiling_loss_fraction": round(loss, 4),
             "soiling_retention_factor": round(retention, 5),
+            "soiling_retention_clamped": clamped,
             "soiling_coefficient": soiling_coefficient,
             "source": source,
             "maiac_collection": cls.MAIAC_COLLECTION,
@@ -514,4 +732,12 @@ def net_irradiance_image(
     corrected_retention = diffuse_retention.add(beam_retention)
 
     effective_baseline = baseline_kwh_m2_period * uhi_derate * soiling_retention
-    return corrected_retention.multiply(effective_baseline).rename("net_irradiance_kwh_m2_period")
+    # Floor at zero: negative net irradiance -- and therefore negative generated
+    # energy -- is physically impossible whatever the derates say. SoilingPenalty
+    # already clamps its own retention, but this function takes plain scalars
+    # from any caller, so the invariant is enforced here too.
+    return (
+        corrected_retention.multiply(effective_baseline)
+        .max(0.0)
+        .rename("net_irradiance_kwh_m2_period")
+    )

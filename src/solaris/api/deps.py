@@ -60,8 +60,9 @@ def _solar_positions_for_window(
     else:
         d0 = date.fromisoformat(win["start_date"])
         pos = solar_positions_single_day(lat_deg, lon_deg, d0)
-    if len(pos) > 42:
-        pos = pos[::2]
+    # No thinning: halving the list would drop half the insolation weight
+    # without renormalising, silently scaling shadow_frequency. See
+    # windows._cap_positions.
     return pos
 
 

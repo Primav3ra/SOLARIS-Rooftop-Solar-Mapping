@@ -150,8 +150,20 @@ def resolve_temporal_window(
 
 
 def _cap_positions(pos: list[tuple]) -> list[tuple]:
-    # same thinning /api/yield does, so the curve's shadow matches the headline number
-    return pos[::2] if len(pos) > 42 else pos
+    """
+    Identity. Kept so call sites need no change.
+
+    This used to return ``pos[::2]`` when the list exceeded 42 entries, which
+    dropped half the insolation weight **without renormalising** and so would
+    have silently halved shadow_frequency. It never fired: the largest set any
+    builder produces is 39 (monthly), so the branch was dead code concealing a
+    live bug. If a cap is ever genuinely needed it belongs in solar_geometry,
+    alongside merge_weighted_position_sets, which renormalises.
+
+    tests/unit/test_solar_geometry.py asserts every builder stays under 42, and
+    that weights always sum to 1.
+    """
+    return pos
 
 
 def _series_layout(
