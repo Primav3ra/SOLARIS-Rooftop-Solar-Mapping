@@ -1,0 +1,488 @@
+{
+  "algo_version": "2",
+  "dataset_version": "1",
+  "engine": "reference",
+  "generated_utc": "2026-09-13T17:48:59Z",
+  "performance_ratio_band": [
+    0.7,
+    0.93
+  ],
+  "published_references": [
+    {
+      "caveat": "A single well-maintained plant, so its PR sits above the typical range. Reported as a point value, not a band.",
+      "label": "Delhi 12 kWp rooftop, measured",
+      "performance_ratio": [
+        0.85,
+        0.93
+      ],
+      "source": "Performance evaluation of a rooftop PV plant in Northern India",
+      "specific_yield_kwh_per_kwp_yr": [
+        1147.0,
+        1147.0
+      ]
+    },
+    {
+      "caveat": "Assumes a tilted array; this model treats every roof as horizontal.",
+      "label": "Indian rooftop, typical year one",
+      "performance_ratio": [
+        0.78,
+        0.83
+      ],
+      "source": "Industry-observed annual figures, high-irradiance states",
+      "specific_yield_kwh_per_kwp_yr": [
+        1400.0,
+        1700.0
+      ]
+    },
+    {
+      "caveat": "2.89 kWh/kWp/day annualised; high-cloud north-east regime.",
+      "label": "Assam MW-scale rooftop, measured",
+      "performance_ratio": [
+        0.7,
+        0.7
+      ],
+      "source": "Performance analysis of MW-scale rooftop plants in Assam",
+      "specific_yield_kwh_per_kwp_yr": [
+        1055.0,
+        1055.0
+      ]
+    }
+  ],
+  "schema_version": 1,
+  "suites": {
+    "beam_fraction": {
+      "era5_fallback_used_by_model": 0.6,
+      "n_city_years": 30,
+      "note": "The model falls back to 0.60 when ERA5 sampling fails, and its docstring claims an annual 0.55-0.72 range. Compare against the reference mean above.",
+      "reference_beam_fraction_max": 0.6341,
+      "reference_beam_fraction_mean": 0.5404,
+      "reference_beam_fraction_min": 0.4412
+    },
+    "irradiance_reference_spread": {
+      "note": "No accuracy claim can be tighter than this spread. Reported per city rather than aggregated.",
+      "rows": [
+        {
+          "city": "Delhi",
+          "global_solar_atlas_kwh_m2_yr": 1930.0,
+          "nasa_power_kwh_m2_yr": 1735.6,
+          "spread_kwh_m2_yr": 194.4,
+          "spread_pct_of_mean": 10.6
+        }
+      ]
+    },
+    "specific_yield_vs_published": {
+      "band": [
+        1000.0,
+        1750.0
+      ],
+      "by_city_year": [
+        {
+          "city": "Delhi",
+          "combined_derate": 0.9412,
+          "distance_from_band": 0.0,
+          "in_published_band": true,
+          "net_retention": 0.9494,
+          "performance_ratio": 0.8,
+          "reference_beam_fraction": 0.5316,
+          "reference_ghi_kwh_m2": 1757.6,
+          "specific_yield_kwh_per_kwp_yr": 1256.4,
+          "year": 2020,
+          "zone": "composite, very high aerosol"
+        },
+        {
+          "city": "Delhi",
+          "combined_derate": 0.9412,
+          "distance_from_band": 0.0,
+          "in_published_band": true,
+          "net_retention": 0.9497,
+          "performance_ratio": 0.8,
+          "reference_beam_fraction": 0.5135,
+          "reference_ghi_kwh_m2": 1709.9,
+          "specific_yield_kwh_per_kwp_yr": 1222.7,
+          "year": 2021,
+          "zone": "composite, very high aerosol"
+        },
+        {
+          "city": "Delhi",
+          "combined_derate": 0.9412,
+          "distance_from_band": 0.0,
+          "in_published_band": true,
+          "net_retention": 0.9494,
+          "performance_ratio": 0.8,
+          "reference_beam_fraction": 0.5289,
+          "reference_ghi_kwh_m2": 1739.2,
+          "specific_yield_kwh_per_kwp_yr": 1243.2,
+          "year": 2022,
+          "zone": "composite, very high aerosol"
+        },
+        {
+          "city": "Jaipur",
+          "combined_derate": 0.9412,
+          "distance_from_band": 0.0,
+          "in_published_band": true,
+          "net_retention": 0.948,
+          "performance_ratio": 0.8,
+          "reference_beam_fraction": 0.6018,
+          "reference_ghi_kwh_m2": 1919.5,
+          "specific_yield_kwh_per_kwp_yr": 1370.0,
+          "year": 2020,
+          "zone": "semi-arid, high aerosol"
+        },
+        {
+          "city": "Jaipur",
+          "combined_derate": 0.9412,
+          "distance_from_band": 0.0,
+          "in_published_band": true,
+          "net_retention": 0.9482,
+          "performance_ratio": 0.8,
+          "reference_beam_fraction": 0.5886,
+          "reference_ghi_kwh_m2": 1875.3,
+          "specific_yield_kwh_per_kwp_yr": 1338.9,
+          "year": 2021,
+          "zone": "semi-arid, high aerosol"
+        },
+        {
+          "city": "Jaipur",
+          "combined_derate": 0.9412,
+          "distance_from_band": 0.0,
+          "in_published_band": true,
+          "net_retention": 0.9479,
+          "performance_ratio": 0.8,
+          "reference_beam_fraction": 0.6063,
+          "reference_ghi_kwh_m2": 1903.4,
+          "specific_yield_kwh_per_kwp_yr": 1358.5,
+          "year": 2022,
+          "zone": "semi-arid, high aerosol"
+        },
+        {
+          "city": "Jodhpur",
+          "combined_derate": 0.9412,
+          "distance_from_band": 0.0,
+          "in_published_band": true,
+          "net_retention": 0.9473,
+          "performance_ratio": 0.8,
+          "reference_beam_fraction": 0.6333,
+          "reference_ghi_kwh_m2": 2002.1,
+          "specific_yield_kwh_per_kwp_yr": 1428.1,
+          "year": 2020,
+          "zone": "arid, dusty"
+        },
+        {
+          "city": "Jodhpur",
+          "combined_derate": 0.9412,
+          "distance_from_band": 0.0,
+          "in_published_band": true,
+          "net_retention": 0.9476,
+          "performance_ratio": 0.8,
+          "reference_beam_fraction": 0.6215,
+          "reference_ghi_kwh_m2": 1986.6,
+          "specific_yield_kwh_per_kwp_yr": 1417.4,
+          "year": 2021,
+          "zone": "arid, dusty"
+        },
+        {
+          "city": "Jodhpur",
+          "combined_derate": 0.9412,
+          "distance_from_band": 0.0,
+          "in_published_band": true,
+          "net_retention": 0.9473,
+          "performance_ratio": 0.8,
+          "reference_beam_fraction": 0.6341,
+          "reference_ghi_kwh_m2": 1982.0,
+          "specific_yield_kwh_per_kwp_yr": 1413.7,
+          "year": 2022,
+          "zone": "arid, dusty"
+        },
+        {
+          "city": "Ahmedabad",
+          "combined_derate": 0.9412,
+          "distance_from_band": 0.0,
+          "in_published_band": true,
+          "net_retention": 0.9476,
+          "performance_ratio": 0.8,
+          "reference_beam_fraction": 0.6194,
+          "reference_ghi_kwh_m2": 1986.1,
+          "specific_yield_kwh_per_kwp_yr": 1417.0,
+          "year": 2020,
+          "zone": "semi-arid"
+        },
+        {
+          "city": "Ahmedabad",
+          "combined_derate": 0.9412,
+          "distance_from_band": 0.0,
+          "in_published_band": true,
+          "net_retention": 0.9483,
+          "performance_ratio": 0.8,
+          "reference_beam_fraction": 0.5834,
+          "reference_ghi_kwh_m2": 1907.3,
+          "specific_yield_kwh_per_kwp_yr": 1361.8,
+          "year": 2021,
+          "zone": "semi-arid"
+        },
+        {
+          "city": "Ahmedabad",
+          "combined_derate": 0.9412,
+          "distance_from_band": 0.0,
+          "in_published_band": true,
+          "net_retention": 0.9476,
+          "performance_ratio": 0.8,
+          "reference_beam_fraction": 0.6185,
+          "reference_ghi_kwh_m2": 1985.8,
+          "specific_yield_kwh_per_kwp_yr": 1416.9,
+          "year": 2022,
+          "zone": "semi-arid"
+        },
+        {
+          "city": "Mumbai",
+          "combined_derate": 0.9412,
+          "distance_from_band": 0.0,
+          "in_published_band": true,
+          "net_retention": 0.9486,
+          "performance_ratio": 0.8,
+          "reference_beam_fraction": 0.5706,
+          "reference_ghi_kwh_m2": 1887.4,
+          "specific_yield_kwh_per_kwp_yr": 1348.1,
+          "year": 2020,
+          "zone": "coastal, humid"
+        },
+        {
+          "city": "Mumbai",
+          "combined_derate": 0.9412,
+          "distance_from_band": 0.0,
+          "in_published_band": true,
+          "net_retention": 0.9493,
+          "performance_ratio": 0.8,
+          "reference_beam_fraction": 0.5337,
+          "reference_ghi_kwh_m2": 1816.9,
+          "specific_yield_kwh_per_kwp_yr": 1298.7,
+          "year": 2021,
+          "zone": "coastal, humid"
+        },
+        {
+          "city": "Mumbai",
+          "combined_derate": 0.9412,
+          "distance_from_band": 0.0,
+          "in_published_band": true,
+          "net_retention": 0.9491,
+          "performance_ratio": 0.8,
+          "reference_beam_fraction": 0.546,
+          "reference_ghi_kwh_m2": 1868.0,
+          "specific_yield_kwh_per_kwp_yr": 1334.9,
+          "year": 2022,
+          "zone": "coastal, humid"
+        },
+        {
+          "city": "Bengaluru",
+          "combined_derate": 0.9412,
+          "distance_from_band": 0.0,
+          "in_published_band": true,
+          "net_retention": 0.9493,
+          "performance_ratio": 0.8,
+          "reference_beam_fraction": 0.5339,
+          "reference_ghi_kwh_m2": 1950.2,
+          "specific_yield_kwh_per_kwp_yr": 1393.9,
+          "year": 2020,
+          "zone": "plateau, moderate"
+        },
+        {
+          "city": "Bengaluru",
+          "combined_derate": 0.9412,
+          "distance_from_band": 0.0,
+          "in_published_band": true,
+          "net_retention": 0.9496,
+          "performance_ratio": 0.8,
+          "reference_beam_fraction": 0.5189,
+          "reference_ghi_kwh_m2": 1884.9,
+          "specific_yield_kwh_per_kwp_yr": 1347.7,
+          "year": 2021,
+          "zone": "plateau, moderate"
+        },
+        {
+          "city": "Bengaluru",
+          "combined_derate": 0.9412,
+          "distance_from_band": 0.0,
+          "in_published_band": true,
+          "net_retention": 0.9497,
+          "performance_ratio": 0.8,
+          "reference_beam_fraction": 0.5126,
+          "reference_ghi_kwh_m2": 1862.3,
+          "specific_yield_kwh_per_kwp_yr": 1331.7,
+          "year": 2022,
+          "zone": "plateau, moderate"
+        },
+        {
+          "city": "Chennai",
+          "combined_derate": 0.9412,
+          "distance_from_band": 0.0,
+          "in_published_band": true,
+          "net_retention": 0.9494,
+          "performance_ratio": 0.8,
+          "reference_beam_fraction": 0.5305,
+          "reference_ghi_kwh_m2": 1839.9,
+          "specific_yield_kwh_per_kwp_yr": 1315.2,
+          "year": 2020,
+          "zone": "coastal tropical"
+        },
+        {
+          "city": "Chennai",
+          "combined_derate": 0.9412,
+          "distance_from_band": 0.0,
+          "in_published_band": true,
+          "net_retention": 0.9496,
+          "performance_ratio": 0.8,
+          "reference_beam_fraction": 0.5195,
+          "reference_ghi_kwh_m2": 1842.9,
+          "specific_yield_kwh_per_kwp_yr": 1317.6,
+          "year": 2021,
+          "zone": "coastal tropical"
+        },
+        {
+          "city": "Chennai",
+          "combined_derate": 0.9412,
+          "distance_from_band": 0.0,
+          "in_published_band": true,
+          "net_retention": 0.9496,
+          "performance_ratio": 0.8,
+          "reference_beam_fraction": 0.5186,
+          "reference_ghi_kwh_m2": 1835.4,
+          "specific_yield_kwh_per_kwp_yr": 1312.3,
+          "year": 2022,
+          "zone": "coastal tropical"
+        },
+        {
+          "city": "Kolkata",
+          "combined_derate": 0.9412,
+          "distance_from_band": 0.0,
+          "in_published_band": true,
+          "net_retention": 0.9508,
+          "performance_ratio": 0.8,
+          "reference_beam_fraction": 0.4598,
+          "reference_ghi_kwh_m2": 1604.9,
+          "specific_yield_kwh_per_kwp_yr": 1148.9,
+          "year": 2020,
+          "zone": "humid subtropical"
+        },
+        {
+          "city": "Kolkata",
+          "combined_derate": 0.9412,
+          "distance_from_band": 0.0,
+          "in_published_band": true,
+          "net_retention": 0.9512,
+          "performance_ratio": 0.8,
+          "reference_beam_fraction": 0.4412,
+          "reference_ghi_kwh_m2": 1566.9,
+          "specific_yield_kwh_per_kwp_yr": 1122.2,
+          "year": 2021,
+          "zone": "humid subtropical"
+        },
+        {
+          "city": "Kolkata",
+          "combined_derate": 0.9412,
+          "distance_from_band": 0.0,
+          "in_published_band": true,
+          "net_retention": 0.9509,
+          "performance_ratio": 0.8,
+          "reference_beam_fraction": 0.4571,
+          "reference_ghi_kwh_m2": 1654.5,
+          "specific_yield_kwh_per_kwp_yr": 1184.5,
+          "year": 2022,
+          "zone": "humid subtropical"
+        },
+        {
+          "city": "Guwahati",
+          "combined_derate": 0.9412,
+          "distance_from_band": 0.0,
+          "in_published_band": true,
+          "net_retention": 0.95,
+          "performance_ratio": 0.8,
+          "reference_beam_fraction": 0.4989,
+          "reference_ghi_kwh_m2": 1542.8,
+          "specific_yield_kwh_per_kwp_yr": 1103.6,
+          "year": 2020,
+          "zone": "high cloud, north-east"
+        },
+        {
+          "city": "Guwahati",
+          "combined_derate": 0.9412,
+          "distance_from_band": 0.0,
+          "in_published_band": true,
+          "net_retention": 0.9503,
+          "performance_ratio": 0.8,
+          "reference_beam_fraction": 0.4874,
+          "reference_ghi_kwh_m2": 1592.0,
+          "specific_yield_kwh_per_kwp_yr": 1139.1,
+          "year": 2021,
+          "zone": "high cloud, north-east"
+        },
+        {
+          "city": "Guwahati",
+          "combined_derate": 0.9412,
+          "distance_from_band": 0.0,
+          "in_published_band": true,
+          "net_retention": 0.9498,
+          "performance_ratio": 0.8,
+          "reference_beam_fraction": 0.5118,
+          "reference_ghi_kwh_m2": 1542.9,
+          "specific_yield_kwh_per_kwp_yr": 1103.4,
+          "year": 2022,
+          "zone": "high cloud, north-east"
+        },
+        {
+          "city": "Leh",
+          "combined_derate": 0.9412,
+          "distance_from_band": 0.0,
+          "in_published_band": true,
+          "net_retention": 0.9496,
+          "performance_ratio": 0.8,
+          "reference_beam_fraction": 0.5198,
+          "reference_ghi_kwh_m2": 1924.5,
+          "specific_yield_kwh_per_kwp_yr": 1376.0,
+          "year": 2020,
+          "zone": "high altitude, low aerosol"
+        },
+        {
+          "city": "Leh",
+          "combined_derate": 0.9412,
+          "distance_from_band": 0.0,
+          "in_published_band": true,
+          "net_retention": 0.9503,
+          "performance_ratio": 0.8,
+          "reference_beam_fraction": 0.487,
+          "reference_ghi_kwh_m2": 1826.7,
+          "specific_yield_kwh_per_kwp_yr": 1307.0,
+          "year": 2021,
+          "zone": "high altitude, low aerosol"
+        },
+        {
+          "city": "Leh",
+          "combined_derate": 0.9412,
+          "distance_from_band": 0.0,
+          "in_published_band": true,
+          "net_retention": 0.9503,
+          "performance_ratio": 0.8,
+          "reference_beam_fraction": 0.485,
+          "reference_ghi_kwh_m2": 1876.9,
+          "specific_yield_kwh_per_kwp_yr": 1343.0,
+          "year": 2022,
+          "zone": "high altitude, low aerosol"
+        }
+      ],
+      "frac_in_band": 1.0,
+      "n": 30,
+      "n_in_band": 30,
+      "summary": {
+        "max": 1428.1,
+        "mean": 1302.4133,
+        "median": 1334.9,
+        "min": 1103.4,
+        "n": 30,
+        "std": 98.311
+      }
+    }
+  },
+  "years": [
+    2020,
+    2021,
+    2022
+  ]
+}

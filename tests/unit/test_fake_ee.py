@@ -446,11 +446,18 @@ class TestSyntheticFixtures:
         assert celsius.min() == pytest.approx(30.0, abs=0.3)
 
     def test_aod_fixture_corrupts_only_qa_flagged_pixels(self):
+        """
+        AOD_QA bits 0-2 are MCD19A2's cloud mask, where 001 means *clear* --
+        a set bit, not a cleared one, which is easy to invert.
+        """
         raw, qa = syn.aod_with_bad_quality_pixels(
             shape=(64, 64), clean_aod=0.6, corrupt_aod=5.0, corrupt_fraction=0.25
         )
         aod = raw * 0.001
-        assert np.allclose(aod[qa == 0], 0.6)
-        assert np.allclose(aod[qa == 1], 5.0)
-        # The unmasked mean is dragged far off the clean value: that is D4.
+        clear = (qa.astype(int) & 0b111) == 0b001
+        assert np.allclose(aod[clear], 0.6)
+        assert np.allclose(aod[~clear], 5.0)
+        # Averaging without the mask drags the mean far off the clear value.
+        # That was defect D4; the masked mean now recovers 0.6.
         assert aod.mean() > 1.0
+        assert np.isclose(aod[clear].mean(), 0.6)

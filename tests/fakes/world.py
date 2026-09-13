@@ -158,9 +158,11 @@ def register_world() -> None:
             )
         ],
     )
+    # AOD_QA bits 0-2 are the cloud mask; 001 = clear. Every pixel here is
+    # clear, so the QA-masked mean equals AOD_VALUE exactly.
     fake.register_collection(
         "MODIS/061/MCD19A2_GRANULES",
-        _constant_collection({"Optical_Depth_055": AOD_VALUE / 0.001}, 1),
+        _constant_collection({"Optical_Depth_055": AOD_VALUE / 0.001, "AOD_QA": 0b001}, 1),
     )
 
 

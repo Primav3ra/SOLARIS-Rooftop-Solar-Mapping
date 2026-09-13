@@ -345,41 +345,70 @@ class FakeImage:
     def exp(self):
         return self._unary(np.exp)
 
+    # -- bitwise (QA bitmask decoding) ------------------------------------
+
+    def bitwiseAnd(self, other):
+        return self._binary(
+            other, lambda a, b: np.bitwise_and(_to_int(a), _to_int(b)).astype(float)
+        )
+
+    def bitwiseOr(self, other):
+        return self._binary(other, lambda a, b: np.bitwise_or(_to_int(a), _to_int(b)).astype(float))
+
+    def rightShift(self, other):
+        return self._binary(
+            other, lambda a, b: np.right_shift(_to_int(a), _to_int(b)).astype(float)
+        )
+
+    def leftShift(self, other):
+        return self._binary(other, lambda a, b: np.left_shift(_to_int(a), _to_int(b)).astype(float))
+
     def log(self):
         return self._unary(np.log)
 
     # -- comparison (1.0 / 0.0, like Earth Engine) -------------------------
 
     @staticmethod
-    def _b(arr) -> np.ndarray:
-        return np.where(arr, 1.0, 0.0)
+    def _b(arr, *operands) -> np.ndarray:
+        """
+        Boolean result as 1.0 / 0.0, propagating masks.
+
+        Earth Engine propagates masks through comparisons: comparing a masked
+        pixel yields a masked pixel, not False. The fake previously returned
+        0.0, which was more forgiving than the real API and concealed a real
+        edge artefact in the sky-view model.
+        """
+        out = np.where(arr, 1.0, 0.0)
+        for operand in operands:
+            out = np.where(np.isnan(np.asarray(operand, dtype=float)), np.nan, out)
+        return out
 
     def gt(self, other):
-        return self._binary(other, lambda a, b: self._b(a > b))
+        return self._binary(other, lambda a, b: self._b(a > b, a, b))
 
     def gte(self, other):
-        return self._binary(other, lambda a, b: self._b(a >= b))
+        return self._binary(other, lambda a, b: self._b(a >= b, a, b))
 
     def lt(self, other):
-        return self._binary(other, lambda a, b: self._b(a < b))
+        return self._binary(other, lambda a, b: self._b(a < b, a, b))
 
     def lte(self, other):
-        return self._binary(other, lambda a, b: self._b(a <= b))
+        return self._binary(other, lambda a, b: self._b(a <= b, a, b))
 
     def eq(self, other):
-        return self._binary(other, lambda a, b: self._b(a == b))
+        return self._binary(other, lambda a, b: self._b(a == b, a, b))
 
     def neq(self, other):
-        return self._binary(other, lambda a, b: self._b(a != b))
+        return self._binary(other, lambda a, b: self._b(a != b, a, b))
 
     def And(self, other):
-        return self._binary(other, lambda a, b: self._b((a > 0) & (b > 0)))
+        return self._binary(other, lambda a, b: self._b((a > 0) & (b > 0), a, b))
 
     def Or(self, other):
-        return self._binary(other, lambda a, b: self._b((a > 0) | (b > 0)))
+        return self._binary(other, lambda a, b: self._b((a > 0) | (b > 0), a, b))
 
     def Not(self):
-        return self._unary(lambda a: self._b(a == 0))
+        return self._unary(lambda a: self._b(a == 0, a))
 
     # -- projection -------------------------------------------------------
 
@@ -531,6 +560,16 @@ class FakeImage:
         }
 
 
+def _to_int(arr) -> np.ndarray:
+    """
+    Cast to int for bitwise ops, treating masked pixels as 0.
+
+    Earth Engine's QA bands are integers; the fake stores everything as float,
+    so bitwise operations need an explicit cast.
+    """
+    return np.nan_to_num(np.asarray(arr, dtype=float)).astype(np.int64)
+
+
 def _first_array(bands: BandDict) -> np.ndarray:
     return bands[next(iter(bands))]
 
@@ -552,6 +591,13 @@ def _shift_nan(arr: np.ndarray, shift: tuple[int, int]) -> np.ndarray:
     dy, dx = shift
     out = np.full_like(arr, np.nan)
     ny, nx = arr.shape
+    # A shift at least as large as the grid moves everything out of frame.
+    # Without this, `min(ny, ny + dy)` goes negative for large negative dy and
+    # numpy reinterprets it as an offset from the end, producing a slice-length
+    # mismatch. The shadow trace samples out to 400 m (100 px), so this is
+    # reachable on any grid narrower than that.
+    if abs(dy) >= ny or abs(dx) >= nx:
+        return out
     ys_src = slice(max(0, -dy), min(ny, ny - dy))
     ys_dst = slice(max(0, dy), min(ny, ny + dy))
     xs_src = slice(max(0, -dx), min(nx, nx - dx))

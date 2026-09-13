@@ -126,26 +126,26 @@
     ],
     "status": "ok",
     "values": [
-      6623188.628,
-      6620484.619,
-      6616644.466,
-      6613037.166,
-      6606205.536,
-      6605456.191,
-      6605141.193,
-      6610397.566,
-      6615490.616,
-      6618705.334,
-      6622560.86,
-      6623542.763
+      6384401.821,
+      6418150.945,
+      6464240.922,
+      6496007.497,
+      6510106.715,
+      6512745.749,
+      6510780.989,
+      6501654.675,
+      6478186.4,
+      6440168.476,
+      6396165.262,
+      6370921.081
     ]
   },
   "/api/yield": {
     "accounting_period": "calendar_year",
-    "after_shadow_yield_kwh": 7022505.3825,
-    "after_soiling_yield_kwh": 6613899.2915,
-    "after_svf_yield_kwh": 7006249.2494,
-    "after_uhi_yield_kwh": 7006249.2494,
+    "after_shadow_yield_kwh": 6897066.5504,
+    "after_soiling_yield_kwh": 6453319.2375,
+    "after_svf_yield_kwh": 6836143.2601,
+    "after_uhi_yield_kwh": 6836143.2601,
     "baseline_time_mode": "yearly",
     "baseline_yield_kwh": 7060193.28,
     "beam_fraction": 0.62,
@@ -165,34 +165,34 @@
           "properties": {
             "area_in_meters": 240.0,
             "confidence": 0.86,
-            "mean_shadow_fraction": 0.135,
-            "net_irradiance_kwh_m2_period": 1635.7632,
-            "period_yield_kwh": 6613899.2915,
+            "mean_shadow_fraction": 0.0588,
+            "net_irradiance_kwh_m2_period": 1698.3598,
+            "period_yield_kwh": 6453319.2375,
             "roof_area_m2": 36864.0,
             "shade_intervals": [
               {
                 "label": "00-04",
-                "shade_area_m2": 4880.77,
-                "shade_fraction": 0.1324,
-                "shade_percent": 13.24
+                "shade_area_m2": 4050.12,
+                "shade_fraction": 0.1099,
+                "shade_percent": 10.99
               },
               {
                 "label": "04-08",
-                "shade_area_m2": 5023.33,
-                "shade_fraction": 0.1363,
-                "shade_percent": 13.63
+                "shade_area_m2": 1333.65,
+                "shade_fraction": 0.0362,
+                "shade_percent": 3.62
               },
               {
                 "label": "08-12",
-                "shade_area_m2": 4956.5,
-                "shade_fraction": 0.1344,
-                "shade_percent": 13.45
+                "shade_area_m2": 2502.29,
+                "shade_fraction": 0.0679,
+                "shade_percent": 6.79
               },
               {
                 "label": "12-16",
-                "shade_area_m2": 4776.74,
-                "shade_fraction": 0.1296,
-                "shade_percent": 12.96
+                "shade_area_m2": 5060.72,
+                "shade_fraction": 0.1373,
+                "shade_percent": 13.73
               },
               {
                 "label": "16-20",
@@ -216,27 +216,27 @@
       "type": "FeatureCollection"
     },
     "mean_aod_550nm": 0.7,
-    "mean_shadow_fraction": 0.135,
-    "mean_shadow_retention": 0.9163,
-    "mean_sky_view_factor": 0.9886,
+    "mean_shadow_fraction": 0.0588,
+    "mean_shadow_retention": 0.9635,
+    "mean_sky_view_factor": 0.9564,
     "month": null,
-    "net_irradiance_kwh_m2_period": 1635.7632,
+    "net_irradiance_kwh_m2_period": 1698.3598,
     "packing_factor": 0.7,
     "panel_efficiency": 0.18,
     "penalty_contribution": {
-      "shadow_contribution_pct": 8.445,
-      "shadow_loss_kwh": 37687.8975,
-      "soiling_contribution_pct": 87.913,
-      "soiling_loss_kwh": 392349.958,
-      "svf_contribution_pct": 3.642,
-      "svf_loss_kwh": 16256.133,
+      "shadow_contribution_pct": 26.88,
+      "shadow_loss_kwh": 163126.7296,
+      "soiling_contribution_pct": 63.081,
+      "soiling_loss_kwh": 382824.0226,
+      "svf_contribution_pct": 10.039,
+      "svf_loss_kwh": 60923.2903,
       "uhi_contribution_pct": 0.0,
       "uhi_loss_kwh": 0.0
     },
-    "penalty_loss_kwh": 446293.9885,
-    "penalty_loss_pct": 6.3213,
+    "penalty_loss_kwh": 606874.0425,
+    "penalty_loss_pct": 8.5957,
     "performance_ratio": 0.8,
-    "period_yield_kwh": 6613899.2915,
+    "period_yield_kwh": 6453319.2375,
     "quarter": null,
     "regional_ghi_kwh_m2_period": 1900.0,
     "roof_area_m2": 36864.0,
@@ -244,27 +244,27 @@
     "shade_intervals": [
       {
         "label": "00-04",
-        "shade_area_m2": 4880.77,
-        "shade_fraction": 0.1324,
-        "shade_percent": 13.24
+        "shade_area_m2": 4050.12,
+        "shade_fraction": 0.1099,
+        "shade_percent": 10.99
       },
       {
         "label": "04-08",
-        "shade_area_m2": 5023.33,
-        "shade_fraction": 0.1363,
-        "shade_percent": 13.63
+        "shade_area_m2": 1333.65,
+        "shade_fraction": 0.0362,
+        "shade_percent": 3.62
       },
       {
         "label": "08-12",
-        "shade_area_m2": 4956.5,
-        "shade_fraction": 0.1344,
-        "shade_percent": 13.45
+        "shade_area_m2": 2502.29,
+        "shade_fraction": 0.0679,
+        "shade_percent": 6.79
       },
       {
         "label": "12-16",
-        "shade_area_m2": 4776.74,
-        "shade_fraction": 0.1296,
-        "shade_percent": 12.96
+        "shade_area_m2": 5060.72,
+        "shade_fraction": 0.1373,
+        "shade_percent": 13.73
       },
       {
         "label": "16-20",
@@ -279,7 +279,7 @@
         "shade_percent": 0.0
       }
     ],
-    "shadow_penalty_percent": 8.37,
+    "shadow_penalty_percent": 3.65,
     "sky_view_factor_meta": {
       "n_azimuth": 8,
       "sample_radii_px": [
@@ -297,6 +297,7 @@
       "scale_m": 1000.0,
       "soiling_coefficient": 0.08,
       "soiling_loss_fraction": 0.056,
+      "soiling_retention_clamped": false,
       "soiling_retention_factor": 0.944,
       "source": "reduceRegion"
     },
@@ -304,17 +305,19 @@
     "soiling_retention_factor": 0.944,
     "start_date": "2023-01-01",
     "status": "ok",
-    "svf_penalty_percent": 0.43,
+    "svf_penalty_percent": 1.66,
     "uhi_derate_factor": 1.0,
     "uhi_penalty": {
       "accounting_year": 2023,
-      "background_kernel_km": 30,
+      "background_kernel_km": 30.0,
       "background_lst_celsius": 30.87,
+      "delta_t_air_celsius": 0.0,
       "delta_t_uhi_celsius": 0.0,
       "mean_lst_day_celsius": 30.87,
       "modis_collection": "MODIS/061/MOD11A2",
       "scale_m": 1000.0,
       "source": "reduceRegion",
+      "surface_to_air_ratio": 0.3,
       "temp_coeff_per_c": -0.004,
       "uhi_derate_factor": 1.0
     },

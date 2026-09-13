@@ -267,29 +267,54 @@ class TestYieldAccountingIdentities:
 
 class TestPenaltyBalance:
     """
-    Records how the total loss is currently apportioned.
+    Records how total loss is apportioned between the four penalty layers.
 
-    Measured on the synthetic city: soiling accounts for ~88% of all penalty
-    loss, against ~8% for shadowing and ~4% for sky-view obstruction. In other
-    words the headline "urban penalty" is dominated by a single uncalibrated
-    linear coefficient (``mean_AOD * 0.08``), while the two geometric layers the
-    project's contribution rests on are marginal -- and both are understated by
-    defects D1 and D2. Pinned so the balance shift is visible once those are
-    fixed and the soiling model is replaced.
+    This shifted substantially when the geometry defects were fixed. On the
+    synthetic city:
+
+    | layer     | before | after |
+    |-----------|-------:|------:|
+    | shadow    |   8.4% | 26.9% |
+    | sky-view  |   3.6% | 10.0% |
+    | UHI       |   0.0% |  0.0% |
+    | soiling   |  87.9% | 63.1% |
+
+    Before the fix the headline "urban penalty" was overwhelmingly one
+    uncalibrated linear coefficient (``mean_AOD x 0.08``), while the two
+    geometric layers the project's contribution actually rests on came to ~12%
+    combined. They are now ~37%, which is a far more defensible balance for a
+    model whose premise is urban geometry.
+
+    Pinned so the balance cannot drift unnoticed -- particularly once the
+    soiling model is replaced, which should reduce its share further.
     """
 
     @pytest.fixture
     def contribution(self, client):
         return client.post("/api/yield", json=_request()).json()["penalty_contribution"]
 
-    def test_soiling_currently_dominates(self, contribution):
-        assert contribution["soiling_contribution_pct"] > 70.0
+    def test_geometric_layers_are_now_material(self, contribution):
+        """
+        The combined shadow + sky-view share. Was ~12% before the fix; a
+        regression below 20% would mean the geometry has been re-broken.
+        """
+        geometric = contribution["shadow_contribution_pct"] + contribution["svf_contribution_pct"]
+        assert geometric > 20.0, f"geometric layers account for only {geometric:.1f}%"
 
-    def test_sky_view_contribution_is_marginal(self, contribution):
-        assert contribution["svf_contribution_pct"] < 10.0
+    def test_soiling_no_longer_dominates_outright(self, contribution):
+        """Was 87.9%; anything back above 80% suggests the geometry regressed."""
+        assert contribution["soiling_contribution_pct"] < 80.0
 
-    def test_shadow_contribution_is_marginal(self, contribution):
-        assert contribution["shadow_contribution_pct"] < 20.0
+    def test_sky_view_penalty_is_no_longer_negligible(self, contribution):
+        """
+        Was 3.6% because the sky-view factor was biased towards 1 by the units
+        defect. A drop back under 5% would mean that bias has returned.
+        """
+        assert contribution["svf_contribution_pct"] > 5.0
+
+    def test_contributions_are_all_non_negative(self, contribution):
+        for layer in ("shadow", "svf", "uhi", "soiling"):
+            assert contribution[f"{layer}_contribution_pct"] >= 0.0
 
 
 # ---------------------------------------------------------------------------

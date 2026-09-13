@@ -48,9 +48,12 @@ models/**/*.pkl
 models/**/*.txt.model
 models/**/data/
 
-# Eval outputs are CI artifacts; committed references live in evals/references/
-reports/
-evals/reports/
+# Eval outputs are CI artifacts, except the latest report -- that is the
+# project's evidence artifact and the README links to it, so it is committed.
+/reports/
+evals/reports/*
+!evals/reports/latest.md
+!evals/reports/latest.json
 
 # OS / editor
 .DS_Store

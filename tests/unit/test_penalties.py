@@ -110,13 +110,7 @@ class TestShadowFrequencyWeighting:
         freq = penalties.ShadowPenalty.frequency(img, solar_positions=[(45.0, 180.0), (30.0, 90.0)])
         assert np.nanmax(np.nan_to_num(_band(freq))) <= 1.0
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason="D10: frequency() indexes solar_positions[0] before checking "
-        "truthiness, so an empty list raises IndexError instead of ValueError. "
-        "Reachable for a high-latitude winter window where the 2 deg altitude "
-        "floor filters every position.",
-    )
+    # Fixed: D10 -- frequency() now raises ValueError on an empty position list.
     def test_empty_position_list_raises_a_clear_error(self, penalties):
         img = _height_image(syn.single_tower())
         with pytest.raises(ValueError):
@@ -141,15 +135,8 @@ class TestShadowGeometry:
             _band(penalties.ShadowPenalty._mask_for_position(img, alt, az, PIXEL_M))
         )
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason="D1/D2: offsets are computed in pixels (MAX_SHADOW_PIXELS=100) but "
-        "passed to translate(), which defaults to metres -- so the intended 400 m "
-        "reach becomes 100 m. Compounding it, the caster-height test is taken at a "
-        "single fixed offset rather than at the location focal_max found, so only "
-        "one pixel can ever be flagged. Measured: exactly 1 shadowed pixel, 25 px "
-        "north of the tower, instead of a 10 px shadow adjacent to it.",
-    )
+    # Fixed: D1/D2 -- the shadow trace is directional and metre-denominated, so
+    # length now tracks H/tan(alt).
     def test_shadow_extends_the_correct_distance(self, penalties):
         mask = self._mask(penalties, 45.0, 180.0)
         cy, cx = self.CENTRE
@@ -157,24 +144,14 @@ class TestShadowGeometry:
         shadowed = [r for r in range(cy - expected_px, cy) if mask[r, cx] > 0]
         assert len(shadowed) == expected_px
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason="D1/D2: see test_shadow_extends_the_correct_distance. The shadow "
-        "is not adjacent to the building that casts it.",
-    )
+    # Fixed: D1/D2 -- near-field occlusion is tested at every pixel, so the shadow
+    # is contiguous with the building that casts it.
     def test_shadow_is_adjacent_to_its_caster(self, penalties):
         mask = self._mask(penalties, 45.0, 180.0)
         cy, cx = self.CENTRE
         assert mask[cy - 1, cx] > 0, "pixel immediately north of the tower is sunlit"
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason="D1/D2: shadow area does not respond to sun altitude at all. "
-        "The translate distance is a fixed MAX_SHADOW_PIXELS regardless of alt, "
-        "and the fixed-offset caster test admits exactly one pixel, so a 40 m "
-        "tower flags the same single pixel at alt=10 (227 m true shadow) as at "
-        "alt=80 (7 m true shadow).",
-    )
+    # Fixed: D1/D2 -- shadow reach is now H/tan(alt) rather than a fixed offset.
     def test_shadow_area_responds_to_sun_altitude(self, penalties):
         low = int(self._mask(penalties, 10.0, 180.0).sum())
         high = int(self._mask(penalties, 80.0, 180.0).sum())
@@ -237,15 +214,8 @@ class TestScaleDependence:
             "before the focal operation."
         )
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason="D9: UHIPenalty.stats() takes a 30-pixel focal_mean as its rural "
-        "background but never reprojects, so the background window scales with "
-        "the request. Measured on a synthetic hot spot: delta_T = 2.78 C at "
-        "scale=4 against 4.94 C at scale=100 -- a 78% swing in reported heat "
-        "island intensity from the request scale alone. Unlike the shadow path, "
-        "there is no masking term here, so this one is live today.",
-    )
+    # Fixed: D9 -- the background window is now 30 km in metres, not 30 pixels,
+    # so it no longer moves with the request scale.
     def test_uhi_anomaly_is_independent_of_request_scale(self, penalties):
         lst = syn.gaussian_lst_hotspot(shape=(128, 128), peak_excess_c=6.0, sigma_px=16.0)
         syn.register_single_image_collection(
@@ -306,16 +276,8 @@ class TestSkyViewFactor:
         assert np.nanmean(np.nan_to_num(canyon, nan=1.0)) < np.nanmean(np.nan_to_num(flat, nan=1.0))
 
     @pytest.mark.parametrize("wall_height,distance_px", [(10.0, 1), (40.0, 4), (10.0, 16)])
-    @pytest.mark.xfail(
-        strict=True,
-        reason="D2: the horizon angle is atan(rise / (d * 4 m)) while translate() "
-        "only moved d *metres* (its units default to metres, not pixels). The rise "
-        "is therefore sampled 4x nearer than the distance it is divided by, "
-        "understating every horizon angle and biasing SVF towards 1 -- i.e. "
-        "towards no diffuse penalty at all. Measured for a 10 m wall 4 m away: "
-        "0.964888 against an analytic 0.892241, which is exactly the value "
-        "obtained by substituting 16 m for 4 m.",
-    )
+    # Fixed: D2 -- horizon distances are in metres, matching translate()'s units.
+    # Now agrees with the analytic value to 0.0 (was 0.964888 vs 0.892241).
     def test_svf_matches_the_analytic_single_wall_value(self, penalties, wall_height, distance_px):
         grid, probe = syn.wall_at_distance(wall_height=wall_height, distance_px=distance_px)
         arr = _band(penalties.SkyViewFactor.image(_height_image(grid)))
@@ -406,8 +368,10 @@ class TestUhiPenalty:
 class TestSoilingPenalty:
     def _register_aod(self, raw_aod, qa=None):
         bands = {"Optical_Depth_055": raw_aod}
-        if qa is not None:
-            bands["AOD_QA"] = qa
+        # The QA band is now always required, since aod_image() masks on it.
+        # Default to "clear" (cloud-mask bits 001) so tests that do not care
+        # about quality get every pixel.
+        bands["AOD_QA"] = qa if qa is not None else np.full_like(raw_aod, 0b001)
         img = fake.Image.from_bands(bands, native_scale_m=fake.NATIVE_SCALE_M)
         syn.register_single_image_collection("MODIS/061/MCD19A2_GRANULES", img)
 
@@ -443,24 +407,13 @@ class TestSoilingPenalty:
         assert 0.02 < stats["soiling_loss_fraction"] < 0.12
 
     @pytest.mark.parametrize("aod", [13.0, 25.0])
-    @pytest.mark.xfail(
-        strict=True,
-        reason="D5: loss = mean_aod * 0.08 is applied with no cap, so any AOD "
-        "above 12.5 yields a negative retention factor and therefore negative "
-        "generated energy. No guard exists at either end.",
-    )
+    # Fixed: D5 -- retention is clamped at MIN_RETENTION and the binding is reported.
     def test_retention_never_goes_negative(self, penalties, aod):
         self._register_aod(np.full(fake.DEFAULT_SHAPE, aod / 0.001))
         stats = penalties.SoilingPenalty.stats(fake.FakeGeometry(), "2023-01-01")
         assert stats["soiling_retention_factor"] >= 0.0
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason="D4: aod_image() takes .mean() with no AOD_QA bitmask, though the "
-        "class docstring claims 'GEE's QA masking drops the cloudy days'. "
-        "MCD19A2_GRANULES ships unmasked retrievals, so low-quality pixels drag "
-        "the mean away from the true clear-sky value.",
-    )
+    # Fixed: D4 -- aod_image() masks on the AOD_QA cloud bits before averaging.
     def test_low_quality_retrievals_are_excluded(self, penalties):
         raw, qa = syn.aod_with_bad_quality_pixels(
             clean_aod=0.60, corrupt_aod=5.00, corrupt_fraction=0.25
@@ -620,12 +573,7 @@ class TestNetIrradianceAlgebra:
         )
         assert 0.0 <= got <= self.BASELINE + 1e-9
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason="D5: an uncapped soiling retention propagates straight through, so "
-        "a high enough AOD produces negative net irradiance -- and therefore "
-        "negative generated energy -- rather than being clamped at zero.",
-    )
+    # Fixed: D5 -- net_irradiance_image() floors its output at zero.
     def test_output_is_non_negative_even_with_an_extreme_soiling_derate(self, penalties):
         retention = 1.0 - 13.0 * 0.08  # AOD 13 at the production coefficient
         got = self._net(

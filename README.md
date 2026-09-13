@@ -154,10 +154,11 @@ Engine project is server configuration and is **not** accepted from the request 
 ## Development
 
 ```bash
-pytest                      # 317 offline tests; no credentials, no network
+pytest                      # 357 offline tests; no credentials, no network
 pytest -m gee               # 23 live Earth Engine tests; requires auth
 ruff check src tests        # lint
 ruff format src tests       # format
+python -m solaris.evals.harness   # validation report against references
 ```
 
 **A fresh clone with no Google Cloud account must get a green `pytest`.** The
@@ -195,20 +196,53 @@ Stated plainly, because they bound how the numbers should be read:
   buildings with steep *roofs*.
 - **Recency is bounded** by ERA5-Land's publication lag and by Open Buildings 2.5D vintages
   (2016–2023), so rooftop geometry is 2023 at newest.
-- **The shadow and sky-view geometry is wrong by a factor of the pixel size.**
-  `ee.Image.translate` defaults to metres and both models pass pixel counts.
-  Measured effect: a 10 m wall 4 m away yields a sky-view factor of 0.9649
-  against an analytic 0.8922 — exactly the value obtained by substituting 16 m
-  for 4 m. Fix pending; see `pytest -q tests/unit/test_penalties.py -rx`.
-- **Soiling dominates the result.** On a representative case it accounts for
-  ~88% of all modelled loss, against ~8% for shadowing and ~4% for sky-view
-  obstruction. So the headline figure rests largely on one uncalibrated linear
-  coefficient (`mean_AOD x 0.08`) rather than on the geometric modelling.
-- Outputs have **not yet been validated** against independent references. Note
-  also that the two obvious references disagree: NASA POWER gives Delhi
-  1753 kWh/m²/yr for 2020 while Global Solar Atlas gives ~1930 — about 10% apart.
-  No accuracy claim can be tighter than that spread. Treat absolute figures as
-  indicative.
+- **Soiling still carries most of the loss** — ~63% of modelled loss on a
+  representative case, against ~27% shadow and ~10% sky-view. Better than the
+  ~88% before the geometry fixes, but the figure still leans on one
+  uncalibrated linear coefficient (`mean_AOD × 0.08`) with no rain-washing or
+  cleaning-interval term.
+- **The urban heat-island layer is weakly constrained.** It uses land *surface*
+  temperature as a proxy for *air* temperature via an explicit but uncertain
+  0.3 transfer coefficient, and charges only the urban excess — the absolute
+  loss against 25 °C STC sits inside the lumped `PERFORMANCE_RATIO`.
+- **Sub-year windows are annualised naively** (`× 365.25/days`), with no
+  seasonal correction. Not yet fixed.
+- **References disagree by ~10%**: NASA POWER gives Delhi 1736 kWh/m²/yr
+  (2020–22 mean) against Global Solar Atlas's ~1930. No accuracy claim can be
+  tighter than that spread.
+
+## Validation
+
+`python -m solaris.evals.harness` compares the model against independent
+references and writes `evals/reports/latest.md`.
+
+Current result — **30/30 city-years fall inside the published plausibility band**
+of 1000–1750 kWh/kWp/yr, mean 1302 (range 1103–1428):
+
+| Site | Zone | Specific yield (kWh/kWp/yr) |
+|---|---|---:|
+| Jodhpur | arid, dusty | 1420 |
+| Ahmedabad | semi-arid | 1399 |
+| Bengaluru | plateau | 1358 |
+| Delhi | composite, high aerosol | 1241 |
+| Kolkata | humid subtropical | 1152 |
+| Guwahati | high cloud, north-east | 1115 |
+
+The ordering is physically right (arid outyields cloudy), and Delhi's 1241 sits
+**8% above** a measured 12 kWp Delhi rooftop at 1147 kWh/kWp/yr — reasonable
+given this model applies no tilt gain (+8–12% in north India) and that plant ran
+at an unusually high PR of 85–93%.
+
+Specific yield is the chosen metric because `packing_factor` and
+`panel_efficiency` cancel out of it, so it tests the irradiance and loss chain
+independently of the least defensible constants in the model.
+
+**One finding worth flagging:** the reference beam fraction averages **0.540**
+across 30 city-years (range 0.441–0.634), while the model falls back to 0.60 and
+its ERA5 path documents 0.55–0.72. ERA5 uses a monthly aerosol climatology and
+is documented to overestimate direct radiation with the error growing in aerosol
+load — which is exactly India's regime. That is a quantified motivation for a
+bias-correction model.
 
 ## License
 

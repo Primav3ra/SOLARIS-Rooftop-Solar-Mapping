@@ -166,8 +166,9 @@ def aod_with_bad_quality_pixels(
     rng = np.random.default_rng(seed)
     qa_bad = rng.random(shape) < corrupt_fraction
     aod = np.where(qa_bad, corrupt_aod, clean_aod)
-    # Bit 0 set = bad retrieval, in the spirit of MCD19A2's AOD_QA packing.
-    qa = np.where(qa_bad, 1, 0).astype(float)
+    # AOD_QA bits 0-2 are MCD19A2's cloud mask: 001 = clear, 011 = cloudy.
+    # Note "clear" is a set bit, not a cleared one -- an easy thing to invert.
+    qa = np.where(qa_bad, 0b011, 0b001).astype(float)
     return aod / 0.001, qa
 
 
