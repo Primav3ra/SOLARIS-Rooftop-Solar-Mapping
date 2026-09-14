@@ -84,7 +84,7 @@ python -m venv .venv
 source .venv/bin/activate
 
 # Install the package (editable) plus dev tooling
-pip install -e ".[dev]"
+pip install -e ".[dev,physics]"
 
 earthengine authenticate
 
@@ -154,7 +154,7 @@ Engine project is server configuration and is **not** accepted from the request 
 ## Development
 
 ```bash
-pytest                      # 357 offline tests; no credentials, no network
+pytest                      # 405 offline tests; no credentials, no network
 pytest -m gee               # 23 live Earth Engine tests; requires auth
 ruff check src tests        # lint
 ruff format src tests       # format
@@ -236,6 +236,43 @@ at an unusually high PR of 85–93%.
 Specific yield is the chosen metric because `packing_factor` and
 `panel_efficiency` cancel out of it, so it tests the irradiance and loss chain
 independently of the least defensible constants in the model.
+
+### pvlib reference engine
+
+A second engine runs the same sites through [pvlib](https://pvlib-python.readthedocs.io)
+for proper plane-of-array transposition (Hay-Davies) and a computed SAPM cell
+temperature, replacing the lumped `0.18 × 0.80 × 0.70` scalar. It resolves the
+double-count between `performance_ratio` and the heat-island derate by naming
+every loss and computing the ones that are computable — the assumed terms
+mirror NREL's PVWatts v5 list, so they're traceable.
+
+| Mount | Mean specific yield | Transposition gain | Mean PR | Mean cell T |
+|---|---:|---:|---:|---:|
+| `flat` (horizontal roof) | 1252 | 1.000 | 0.752 | 44.8 °C |
+| `optimal_fixed` (latitude tilt) | 1340 | 1.075 | 0.749 | 46.0 °C |
+
+**Tilting to the latitude optimum is worth +7.1% annually.** Optimal tilt at
+Delhi comes out 28°, matching what PVGIS reports for `optimalangles=1`. Cell
+temperatures run 44–52 °C across the Indian sites (Leh 20 °C), giving computed
+temperature losses of 7.5–11% — previously buried inside the lumped PR *and*
+double-charged against the UHI layer.
+
+`mount` is carried explicitly in every record because the published 1400–1700
+band assumes tilted arrays: comparing a horizontal-roof result against it would
+read as model bias when much of the gap is a configuration mismatch.
+
+Two things the engine measures rather than assumes:
+
+- **Component closure.** NASA POWER retrieves GHI, DNI and DHI independently, so
+  `DNI·cos(z) + DHI` came out **5.26% below GHI** for Delhi. Since pvlib builds
+  POA from the components, that put a 5% negative bias on every POA figure — and
+  it would have read as model error. The components are now scaled to close
+  against GHI, and the invariant that catches it is that POA at zero tilt must
+  equal GHI exactly (asserted per site).
+- **Climatology discretisation.** The chain runs on a 288-step monthly-diurnal
+  climatology rather than 8760 hourly steps. Checked against the independent
+  full-year daily series: **mean absolute error 2.6%, worst 8.0%** at the
+  monsoon-variable sites.
 
 **One finding worth flagging:** the reference beam fraction averages **0.540**
 across 30 city-years (range 0.441–0.634), while the model falls back to 0.60 and

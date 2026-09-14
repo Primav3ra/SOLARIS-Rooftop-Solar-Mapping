@@ -29,11 +29,18 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# Reference physics + the ML tracks. Not needed to serve the API.
-ml = [
+# Reference PV physics. Optional so the default serving path stays light --
+# pvlib pulls numpy, pandas and scipy, none of which the legacy engine needs.
+# solaris.physics.pv raises a clear PvlibUnavailableError if the pvlib engine
+# is requested without this installed.
+physics = [
   "pvlib>=0.11,<1",
   "numpy>=1.26,<3",
   "pandas>=2.2,<3",
+]
+# The ML tracks, which build on the physics layer.
+ml = [
+  "solaris[physics]",
   "scikit-learn>=1.5,<2",
   "lightgbm>=4.5,<5",
   "joblib>=1.4,<2",

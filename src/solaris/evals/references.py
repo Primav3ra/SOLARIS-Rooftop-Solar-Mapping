@@ -254,3 +254,153 @@ def missing_city_years(years: tuple[int, ...]) -> list[tuple[str, int]]:
     return [
         (city.key, year) for city in CITIES for year in years if load_cached(city.key, year) is None
     ]
+
+
+# ---------------------------------------------------------------------------
+# Hourly reference data, for the pvlib physics engine
+# ---------------------------------------------------------------------------
+
+NASA_POWER_HOURLY_URL = "https://power.larc.nasa.gov/api/temporal/hourly/point"
+
+#: Hourly parameters. Air temperature and wind speed are needed by the SAPM
+#: cell-temperature model, not only the irradiance components.
+NASA_POWER_HOURLY_PARAMS = "ALLSKY_SFC_SW_DWN,ALLSKY_SFC_SW_DIFF,ALLSKY_SFC_SW_DNI,T2M,WS2M"
+
+#: **Must be passed explicitly.** NASA POWER's hourly endpoint defaults to
+#: ``time-standard=LST`` (local solar time), not UTC. Reading LST-stamped data
+#: as UTC shifts every timestamp by lon/15 hours -- 5.1 h for Delhi -- which
+#: puts the solar position four hours out and makes any transposition
+#: meaningless.
+#:
+#: Established empirically rather than from the documentation: correlating GHI
+#: against sin(solar altitude) computed in UTC gives +0.994 with this set to
+#: UTC, against +0.141 under the LST default.
+NASA_POWER_TIME_STANDARD = "UTC"
+
+#: The day of each month making up the monthly-diurnal climatology. The 15th is
+#: where solar declination sits closest to its monthly mean.
+CLIMATOLOGY_DAY_OF_MONTH = 15
+
+
+@dataclass
+class HourlySeries:
+    """
+    A monthly-diurnal climatology: 12 mid-month days x 24 hours = 288 steps.
+
+    Chosen over a full 8760-hour year because transposition and cell
+    temperature are both non-linear in instantaneous irradiance -- so neither
+    can be applied to an annual total -- while a year of hourly data per
+    request is not servable. 288 steps captures the annual integral well
+    because both models are smooth in (zenith, irradiance, temperature). The
+    discretisation error is measured against full hourly, not assumed.
+    """
+
+    city: str
+    year: int
+    #: All keyed "YYYYMMDDHH", all UTC.
+    ghi: dict[str, float] = field(default_factory=dict)
+    diffuse: dict[str, float] = field(default_factory=dict)
+    dni: dict[str, float] = field(default_factory=dict)
+    air_temp_c: dict[str, float] = field(default_factory=dict)
+    wind_m_s: dict[str, float] = field(default_factory=dict)
+
+    @property
+    def stamps(self) -> list[str]:
+        return sorted(self.ghi)
+
+    @property
+    def n_steps(self) -> int:
+        return len(self.ghi)
+
+    def as_columns(self) -> dict[str, list[float]]:
+        """Aligned columns ordered by timestamp, for the physics chain."""
+        keys = self.stamps
+        return {
+            "ghi": [self.ghi[k] for k in keys],
+            "dhi": [self.diffuse.get(k, 0.0) for k in keys],
+            "dni": [self.dni.get(k, 0.0) for k in keys],
+            "temp_air": [self.air_temp_c.get(k, 30.0) for k in keys],
+            "wind": [self.wind_m_s.get(k, 1.0) for k in keys],
+        }
+
+    def datetime_index(self):
+        """
+        A tz-aware pandas index, stamped mid-hour.
+
+        NASA POWER reports an hourly *mean*, so the centre of the hour is the
+        right instant at which to evaluate solar position.
+        """
+        import pandas as pd
+
+        return pd.DatetimeIndex(
+            [pd.Timestamp(f"{k[:4]}-{k[4:6]}-{k[6:8]} {k[8:10]}:30", tz="UTC") for k in self.stamps]
+        )
+
+    def mean_daytime_air_temp_c(self) -> float:
+        """
+        Irradiance-weighted air temperature.
+
+        Weighted rather than averaged: a plain mean over 24 hours includes the
+        night-time minimum, which understates the temperature the generating
+        hours actually see.
+        """
+        keys = [k for k in self.stamps if self.ghi.get(k, 0.0) > 0]
+        if not keys:
+            return 0.0
+        total = sum(self.ghi[k] for k in keys)
+        return sum(self.ghi[k] * self.air_temp_c.get(k, 30.0) for k in keys) / total
+
+    def annual_ghi_kwh_m2(self) -> float:
+        """
+        Annual GHI implied by the climatology.
+
+        Each mid-month day stands in for its whole month, so the daily total is
+        scaled by that month's length.
+        """
+        from calendar import monthrange
+
+        by_month: dict[int, float] = {}
+        for stamp, value in self.ghi.items():
+            month = int(stamp[4:6])
+            by_month[month] = by_month.get(month, 0.0) + value
+        total_wh = sum(
+            daily_wh * monthrange(self.year, month)[1] for month, daily_wh in by_month.items()
+        )
+        return total_wh / 1000.0
+
+
+def hourly_cache_path(city: str, year: int) -> pathlib.Path:
+    return CACHE_DIR / "nasa_power_hourly" / f"{city}_{year}.json"
+
+
+def load_cached_hourly(city: str, year: int) -> HourlySeries | None:
+    path = hourly_cache_path(city, year)
+    if not path.exists():
+        return None
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    return HourlySeries(
+        city=city,
+        year=year,
+        ghi=payload["ghi"],
+        diffuse=payload.get("diffuse", {}),
+        dni=payload.get("dni", {}),
+        air_temp_c=payload.get("air_temp_c", {}),
+        wind_m_s=payload.get("wind_m_s", {}),
+    )
+
+
+def save_cached_hourly(series: HourlySeries, meta: dict) -> pathlib.Path:
+    path = hourly_cache_path(series.city, series.year)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "city": series.city,
+        "year": series.year,
+        "ghi": series.ghi,
+        "diffuse": series.diffuse,
+        "dni": series.dni,
+        "air_temp_c": series.air_temp_c,
+        "wind_m_s": series.wind_m_s,
+        "_meta": meta,
+    }
+    path.write_text(json.dumps(payload, indent=1, sort_keys=True) + "\n", encoding="utf-8")
+    return path

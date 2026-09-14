@@ -50,7 +50,7 @@ from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 
 from solaris.core import constants as C
-from solaris.evals import metrics
+from solaris.evals import metrics, pvlib_suite
 from solaris.evals.references import (
     CITIES,
     PERFORMANCE_RATIO_BAND,
@@ -254,6 +254,7 @@ def run(years: tuple[int, ...] = DEFAULT_YEARS) -> dict:
                 "rows": irradiance_spread(),
             },
             "beam_fraction": beam_fraction_summary(),
+            "pvlib_engine": pvlib_suite.run(max(years)),
         },
         "published_references": [asdict(p) for p in PUBLISHED_YIELDS],
         "performance_ratio_band": list(PERFORMANCE_RATIO_BAND),
