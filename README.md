@@ -154,11 +154,12 @@ Engine project is server configuration and is **not** accepted from the request 
 ## Development
 
 ```bash
-pytest                      # 405 offline tests; no credentials, no network
+pytest                      # 535 offline tests; no credentials, no network
 pytest -m gee               # 23 live Earth Engine tests; requires auth
 ruff check src tests        # lint
 ruff format src tests       # format
 python -m solaris.evals.harness   # validation report against references
+python -m solaris.ml.train         # train + evaluate the ML ladder
 ```
 
 **A fresh clone with no Google Cloud account must get a green `pytest`.** The
@@ -280,6 +281,75 @@ its ERA5 path documents 0.55–0.72. ERA5 uses a monthly aerosol climatology and
 is documented to overestimate direct radiation with the error growing in aerosol
 load — which is exactly India's regime. That is a quantified motivation for a
 bias-correction model.
+
+## Machine learning
+
+One model so far, and it exists to replace a measured defect rather than to add
+ML for its own sake.
+
+**Beam/diffuse decomposition.** The beam fraction is the model's most
+ERA5-sensitive input, and validation showed the production fallback of **0.60**
+against a reference mean of **0.544** — ERA5 uses a monthly aerosol climatology
+and is documented to overestimate direct radiation with the error growing in
+aerosol load, which is exactly India's regime.
+
+Four candidates were fitted and all four reported, on a holdout that is
+**spatial and temporal at once** (3 held-out cities × a held-out year; hours
+within a city-day are strongly correlated, so a random split would test on
+hours whose neighbours were trained on):
+
+| Rung | Test RMSE | MBE | Skill vs Erbs |
+|---|---:|---:|---:|
+| `constant` (today's 0.60) | 0.2540 | −0.139 | −0.78 |
+| `climatology` (36 params, no ML) | 0.1958 | +0.015 | −0.37 |
+| **`erbs`** (published, 1982) | 0.1426 | +0.077 | 0.00 |
+| `ridge` | 0.1097 | +0.014 | +0.23 |
+| **`gradient_boosting`** | **0.0893** | +0.015 | **+0.37** |
+
+**The baseline that matters is Erbs, not the constant** — beating a fixed number
+proves nothing; beating a correlation validated worldwide for forty years is a
+result. A gate of 0.10 skill over Erbs was declared *in the module, before
+training*, so it could not be relaxed to suit the outcome. The gradient-boosted
+model clears it at +0.37 and ships.
+
+Two findings worth noting:
+
+- The constant carries an MBE of **−0.139** in diffuse fraction — a large
+  systematic bias, which is the defect quantified.
+- **Erbs is itself biased for India** (MBE +0.077): it over-predicts diffuse
+  fraction, consistent with having been fitted on US data with different aerosol
+  loading. The learned model cuts that to +0.015.
+
+The serving path never hard-depends on the artifact. The chain is
+`learned model → Erbs → the 0.60 constant`, and **the response always reports
+which rung answered**. Out-of-domain inputs fall through to Erbs rather than
+getting an extrapolated prediction, because a gradient-boosted tree does not
+extrapolate — it returns the nearest leaf, confidently and without basis.
+
+## Deployment
+
+Containerised and deployed to Cloud Run via GitHub Actions, keyless through
+Workload Identity Federation — no service-account JSON anywhere. See
+[.github/workflows/](.github/workflows/) and the [Dockerfile](Dockerfile).
+
+Quota protection is in three layers, because they defend against different
+things:
+
+1. **Input bounds** — the primary defence, and the only one that stops a single
+   well-formed request for an oversized area. Validated before any `ee` object
+   exists, so a rejected request costs nothing.
+2. **A concurrency semaphore** — every endpoint is a sync `def`, so FastAPI runs
+   it on a threadpool of 40; without a cap one instance can hold 40 blocking
+   `getInfo()` calls open at once.
+3. **A daily Earth Engine call budget** — denominated in round-trips rather than
+   HTTP requests, which is why it protects the quota where a request-rate limit
+   would not.
+
+Results are cached on the *resolved* window with coordinates quantised to ~11 m
+— without that, areas of interest come from map clicks and the hit rate is
+approximately zero. Keys are prefixed with `ALGO_VERSION`, so a deploy that
+changes the physics invalidates stale entries automatically rather than relying
+on someone remembering to flush a cache.
 
 ## License
 

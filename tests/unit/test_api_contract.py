@@ -86,10 +86,20 @@ class TestTheNetworkGuardWorks:
     """
 
     def test_guard_actually_fires(self, client):
-        """A request that passes validation must trip the guard, not the network."""
+        """
+        A request that passes validation must trip the guard, not the network.
+
+        The guard's own message is no longer in the body: 500-level detail is
+        sanitised so raw Earth Engine text cannot leak a project id to the
+        caller. So this asserts the error *envelope* instead, which doubles as
+        a check that the sanitising is in place.
+        """
         response = client.post("/api/yield", json={"lat": 28.6, "lon": 77.2})
         assert response.status_code == 500
-        assert "reached Earth Engine" in response.json()["detail"]
+        body = response.json()
+        assert body["error"]["code"] == "internal_error"
+        assert body["request_id"]
+        assert "reached Earth Engine" not in response.text
 
 
 class TestMetaEndpoints:

@@ -49,6 +49,12 @@ VOLATILE_KEYS = {
     "ghi_sample_source",
     "urlTemplate",
     "mapid",
+    # data_quality carries temporal coverage, which is computed against
+    # date.today() -- so it changes daily and cannot be pinned in a golden
+    # file. It is covered instead by tests/unit/test_core.py, which supplies a
+    # fixed `latest` date, and by TestDataQualityBlock below, which asserts the
+    # block's shape without its clock-dependent values.
+    "data_quality",
 }
 
 
@@ -315,6 +321,61 @@ class TestPenaltyBalance:
     def test_contributions_are_all_non_negative(self, contribution):
         for layer in ("shadow", "svf", "uhi", "soiling"):
             assert contribution[f"{layer}_contribution_pct"] >= 0.0
+
+
+class TestDataQualityBlock:
+    """
+    The block that makes a degraded result visibly degraded.
+
+    Asserted on shape and semantics rather than exact values, since the
+    coverage fields move with the calendar.
+    """
+
+    @pytest.fixture
+    def quality(self, client):
+        return client.post("/api/yield", json=_request()).json()["data_quality"]
+
+    def test_is_present_and_shaped(self, quality):
+        for key in ("severity", "fully_computed", "findings", "coverage", "summary"):
+            assert key in quality
+
+    def test_severity_is_a_known_value(self, quality):
+        assert quality["severity"] in {"ok", "degraded", "unreliable"}
+
+    def test_every_finding_explains_itself(self, quality):
+        """
+        A bare source tag is what the old response had. A caller should not
+        need to know what `fallback_urban_midpoint` means.
+        """
+        for finding in quality["findings"]:
+            assert finding["field"]
+            assert finding["severity"] in {"ok", "degraded", "unreliable"}
+            assert len(finding["detail"]) > 30, finding
+
+    def test_empty_shade_buckets_are_flagged(self, quality):
+        """
+        On the synthetic city two UTC buckets contain no sun. They report a
+        shade fraction of 0.0, which reads as "fully sunlit" -- so the
+        distinction has to be stated somewhere.
+        """
+        fields = {f["field"] for f in quality["findings"]}
+        assert "shade_intervals" in fields
+
+    def test_fully_computed_agrees_with_the_findings(self, quality):
+        assert quality["fully_computed"] == (not quality["findings"])
+
+    def test_shade_intervals_carry_both_timezones(self, client):
+        """
+        The buckets are UTC because the pipeline is UTC-aligned to ERA5, but an
+        Indian user reads "08-12" as morning when it is 13:30-17:30 local.
+        """
+        intervals = client.post("/api/yield", json=_request()).json()["shade_intervals"]
+        assert intervals
+        for interval in intervals:
+            assert interval["label_utc"].endswith("UTC")
+            assert interval["label_ist"].endswith("IST")
+        labels = {i["label"]: i["label_ist"] for i in intervals}
+        assert labels["08-12"] == "13:30-17:30 IST"
 
 
 # ---------------------------------------------------------------------------

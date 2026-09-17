@@ -16,16 +16,19 @@ takes effect everywhere.
 
 from __future__ import annotations
 
+import contextlib
 import os
+from datetime import date
 from pathlib import Path
 from typing import Any
 
 import ee
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from solaris.api import deps
+from solaris.api import deps, middleware
 from solaris.api.schemas import (
     BaselineRequest,
     BuildingsRequest,
@@ -33,9 +36,24 @@ from solaris.api.schemas import (
     YieldRequest,
 )
 from solaris.api.windows import (
-    _last_complete_calendar_year,
     _series_layout,
     resolve_temporal_window,
+)
+from solaris.core import constants as C
+from solaris.core.cache import lookup as cache_lookup
+from solaris.core.cache import store as cache_store
+from solaris.core.config import get_settings
+from solaris.core.limits import (
+    BudgetExceededError,
+    ConcurrencyTimeoutError,
+    RateLimitExceededError,
+)
+from solaris.core.quality import DataQuality
+from solaris.gee.coverage import (
+    conservative_latest_date,
+    latest_available_date,
+    max_selectable_year,
+    window_coverage,
 )
 from solaris.gee.datasets import get_open_buildings_vector
 from solaris.gee.irradiance import (
@@ -73,26 +91,99 @@ _ee_tile_template = deps.ee_tile_template
 
 app = FastAPI(title="SOLARIS API", version="0.2.0")
 
-# The UI is served same-origin from this same app, so CORS is only needed for
-# local development and any future separately-hosted frontend. Note that
-# allow_origins=["*"] together with allow_credentials=True is invalid per the
-# CORS spec (browsers reject a wildcard origin when credentials are sent), so
-# the previous configuration offered no real capability -- and nothing here
-# uses cookies or auth headers, so credentials are simply off.
-_cors_origins = [
-    o.strip()
-    for o in os.environ.get(
-        "SOLARIS_CORS_ORIGINS", "http://localhost:8000,http://127.0.0.1:8000"
-    ).split(",")
-    if o.strip()
-]
+_settings = get_settings()
+
+# The dashboard is served same-origin from this same app, so CORS only matters
+# for local development and any separately hosted frontend. Origins come from
+# validated settings, which reject a wildcard outright -- the old
+# allow_origins=["*"] with allow_credentials=True was invalid per the CORS spec
+# anyway (browsers reject a wildcard origin when credentials are sent), so it
+# never granted what it appeared to. Nothing here uses cookies or auth headers.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=_cors_origins,
+    allow_origins=_settings.cors_origins,
     allow_credentials=False,
     allow_methods=["GET", "POST"],
-    allow_headers=["Content-Type"],
+    allow_headers=["Content-Type", "X-Request-ID"],
 )
+
+# Request id, rate limiting, structured logging, and error handling that does
+# not leak Earth Engine internals to the caller.
+middleware.install(app, _settings)
+
+
+#: India Standard Time offset from UTC, in hours.
+IST_OFFSET_HOURS = 5.5
+
+
+def _utc_bucket_to_ist(label: str) -> str:
+    """
+    Re-label a UTC hour bucket in IST.
+
+    The shade matrix buckets are UTC because the pipeline is UTC-aligned to
+    ERA5, but an Indian user reads "08-12" as morning when it is really
+    13:30-17:30 local. Reporting both removes the ambiguity rather than
+    silently mislabelling.
+    """
+    start_utc, end_utc = (int(part) for part in label.split("-"))
+
+    def shift(hour_utc: int) -> str:
+        total = hour_utc + IST_OFFSET_HOURS
+        wrapped = total % 24
+        hours = int(wrapped)
+        minutes = round((wrapped - hours) * 60)
+        return f"{hours:02d}:{minutes:02d}"
+
+    return f"{shift(start_utc)}-{shift(end_utc)} IST"
+
+
+@app.exception_handler(HTTPException)
+async def _sanitise_http_exception(request: Request, exc: HTTPException):
+    """
+    Keep server-side detail server-side.
+
+    Handlers raise ``HTTPException(500, detail=str(exc))``, and FastAPI's own
+    handler serialises that straight to the client -- so a deployed instance
+    answered with "Caller does not have required permission to use project
+    pv-mapping-india", leaking the project id to anyone who asked. FastAPI
+    handles HTTPException before any middleware sees it, so the sanitising has
+    to happen here.
+
+    4xx details are kept: those are caller-facing validation messages and are
+    the whole point of the status code.
+    """
+    request_id = middleware.request_id_var.get()
+    if exc.status_code >= 500:
+        middleware.logger.error(
+            "handler error",
+            extra={
+                "extra_fields": {
+                    "path": request.url.path,
+                    "status": exc.status_code,
+                    "detail": str(exc.detail),
+                }
+            },
+        )
+        return JSONResponse(
+            status_code=exc.status_code,
+            content={
+                "error": {
+                    "code": "internal_error",
+                    "message": (
+                        "An internal error occurred. Quote the request id when reporting it."
+                    ),
+                },
+                "request_id": request_id,
+            },
+        )
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={
+            "error": {"code": "bad_request", "message": exc.detail},
+            "request_id": request_id,
+        },
+        headers=getattr(exc, "headers", None) or {},
+    )
 
 
 @app.get("/api/health")
@@ -102,15 +193,146 @@ def health() -> dict[str, str]:
 
 @app.get("/api/presets")
 def presets() -> dict[str, Any]:
-    ly = _last_complete_calendar_year()
+    """
+    Supported modes, the selectable year range, and the model constants.
+
+    The year ceiling is **data-derived**: it comes from the last date
+    ERA5-Land actually has, not from the calendar. The previous
+    ``date.today().year - 1`` refused a quarter of the current year that had
+    finished months earlier, purely because the calendar year had not ended.
+
+    Also serves the physics constants, so the dashboard stops carrying its own
+    copies of the PV parameters and the grid emission factor -- which was the
+    "keep in sync" comment that nothing enforced.
+    """
+    latest = _cached_latest_available_date()
+    max_year = max_selectable_year(latest)
     return {
         "baseline": {
             "modes": ["yearly", "quarterly", "monthly", "daily"],
-            "year_bounds": {"min": 2000, "max": ly, "default": ly},
+            "year_bounds": {"min": 2000, "max": max_year, "default": max_year},
             "quarter_default": 2,
             "month_default": 1,
-            "daily_note": "Use start_date and end_date_exclusive in ISO format; end must be start + 1 day (exclusive).",
+            "daily_note": (
+                "Use start_date and end_date_exclusive in ISO format; end must "
+                "be start + 1 day (exclusive)."
+            ),
+            "data_availability": {
+                "latest_available_date": latest.isoformat() if latest else None,
+                "source": "probed" if _LATEST_PROBE["ok"] else "conservative_fallback",
+                "note": (
+                    "Derived from the last available ERA5-Land image. A window "
+                    "reaching past this date returns a partial result, flagged "
+                    "under data_quality.coverage."
+                ),
+            },
         },
+        "constants": _public_constants(),
+    }
+
+
+#: Probe result, cached for the day. /api/presets should not cost an Earth
+#: Engine round-trip on every call, and coverage advances at most daily.
+_LATEST_PROBE: dict[str, Any] = {"day": None, "value": None, "ok": False}
+
+
+def _cached_latest_available_date():
+    """
+    The last date with ERA5-Land data, probed once per day per process.
+
+    Falls back to a conservative bound when the probe fails, so a probe failure
+    narrows the year ceiling rather than taking the endpoint down.
+    """
+    today = date.today().isoformat()
+    if _LATEST_PROBE["day"] == today:
+        return _LATEST_PROBE["value"]
+    try:
+        deps.ensure_ee()
+        value = latest_available_date()
+        ok = value is not None
+    except Exception:
+        value, ok = None, False
+    if value is None:
+        value = conservative_latest_date()
+    _LATEST_PROBE.update({"day": today, "value": value, "ok": ok})
+    return value
+
+
+def _public_constants() -> dict[str, Any]:
+    """
+    Model constants the dashboard needs.
+
+    Served rather than duplicated: the PV parameters and the grid emission
+    factor were hardcoded in both the backend and the dashboard JavaScript,
+    with a comment asking future editors to keep them in sync.
+    """
+    return {
+        "panel_efficiency": C.PANEL_EFFICIENCY,
+        "performance_ratio": C.PERFORMANCE_RATIO,
+        "packing_factor": C.PACKING_FACTOR,
+        "building_confidence": C.BUILDING_CONFIDENCE,
+        "grid_emission_factor_kg_per_kwh": C.GRID_EMISSION_FACTOR_KG_PER_KWH,
+        "stc_irradiance_w_m2": C.STC_IRRADIANCE_W_M2,
+        "max_slope_deg": C.MAX_SLOPE_DEG,
+        "roof_scale_m": C.ROOF_SCALE_M,
+        "max_aoi_km2": C.MAX_AOI_KM2,
+        "max_half_size_deg": C.MAX_HALF_SIZE_DEG,
+        "open_buildings_years": [
+            C.OPEN_BUILDINGS_MIN_YEAR,
+            C.OPEN_BUILDINGS_MAX_YEAR,
+        ],
+        "min_days_for_annualisation": C.MIN_DAYS_FOR_ANNUALISATION,
+        "algo_version": C.ALGO_VERSION,
+        "dataset_version": C.DATASET_VERSION,
+    }
+
+
+@app.get("/api/version")
+def version() -> dict[str, Any]:
+    """
+    Build and algorithm identity.
+
+    Makes "which code produced this figure?" answerable, which matters when a
+    validation report is compared against an earlier one.
+    """
+    settings = get_settings()
+    return {
+        "version": "0.2.0",
+        "git_sha": settings.git_sha,
+        "env": settings.env,
+        "algo_version": C.ALGO_VERSION,
+        "dataset_version": C.DATASET_VERSION,
+    }
+
+
+@app.get("/api/config")
+def config() -> dict[str, Any]:
+    """Non-secret runtime configuration, for debugging a deployed instance."""
+    return get_settings().redacted()
+
+
+@app.get("/api/ready")
+def ready() -> dict[str, Any]:
+    """
+    Readiness: can this instance actually serve a computation?
+
+    Distinct from /api/health, which is liveness and touches nothing. Used by
+    the post-deploy smoke test. Deliberately cheap -- it establishes the Earth
+    Engine session but runs no reduction.
+    """
+    settings = get_settings()
+    checks: dict[str, Any] = {"config": "ok", "earth_engine": "unknown"}
+    try:
+        deps.ensure_ee()
+        checks["earth_engine"] = "ok"
+    except Exception as exc:
+        checks["earth_engine"] = f"error: {type(exc).__name__}"
+
+    return {
+        "ready": checks["earth_engine"] == "ok",
+        "checks": checks,
+        "project": settings.gee_project_id,
+        "auth_mode": settings.gee_auth_mode,
     }
 
 
@@ -202,7 +424,15 @@ def compute_baseline(req: BaselineRequest) -> dict[str, Any]:
             "aoi_baseline": aoi_baseline,
             "range_baseline": range_info,
         }
-    except HTTPException:
+    except (
+        HTTPException,
+        BudgetExceededError,
+        RateLimitExceededError,
+        ConcurrencyTimeoutError,
+    ):
+        # Limit failures are translated by the middleware into 429/503
+        # with a Retry-After; swallowing them here would report a quota
+        # problem as an internal error.
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e)) from e
@@ -330,7 +560,15 @@ def tiles(req: TilesRequest) -> dict[str, Any]:
             "bounds": bounds,
             "attribution": "Google Earth Engine",
         }
-    except HTTPException:
+    except (
+        HTTPException,
+        BudgetExceededError,
+        RateLimitExceededError,
+        ConcurrencyTimeoutError,
+    ):
+        # Limit failures are translated by the middleware into 429/503
+        # with a Retry-After; swallowing them here would report a quota
+        # problem as an internal error.
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e)) from e
@@ -373,7 +611,15 @@ def buildings(req: BuildingsRequest) -> dict[str, Any]:
             "building_confidence": req.building_confidence,
             "geojson": {"type": "FeatureCollection", "features": features},
         }
-    except HTTPException:
+    except (
+        HTTPException,
+        BudgetExceededError,
+        RateLimitExceededError,
+        ConcurrencyTimeoutError,
+    ):
+        # Limit failures are translated by the middleware into 429/503
+        # with a Retry-After; swallowing them here would report a quota
+        # problem as an internal error.
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e)) from e
@@ -387,7 +633,13 @@ def compute_yield(req: YieldRequest) -> dict[str, Any]:
     ERA5 GHI is summed over [start_date, end_date_exclusive) at the AOI centroid.
     Shadow retention uses sun positions aligned with that window (year / quarter / day)
     at the centroid latitude and longitude.
+
+    Cached on the resolved window, and the Earth Engine work runs inside a
+    bounded slot counted against the daily call budget.
     """
+    # Created before the try so the finally below can always close it, whether
+    # we return from a cache hit, fail window validation, or complete normally.
+    ee_stack = contextlib.ExitStack()
     try:
         try:
             win = resolve_temporal_window(
@@ -401,11 +653,22 @@ def compute_yield(req: YieldRequest) -> dict[str, Any]:
         except ValueError as ex:
             raise HTTPException(status_code=400, detail=str(ex)) from ex
 
+        s, e = win["start_date"], win["end_date_exclusive"]
+
+        # Cache lookup happens *after* the window is resolved, so
+        # {mode: yearly, year: 2023} and the equivalent explicit range collapse
+        # to one entry rather than two.
+        cached = cache_lookup("/api/yield", req.model_dump(), start_date=s, end_date_exclusive=e)
+        if cached.value is not None:
+            return JSONResponse(content=cached.value, headers=cached.headers)
+
+        # Bound concurrent Earth Engine work and count it against the daily
+        # budget. /api/yield makes roughly a dozen round-trips.
+        ee_stack.enter_context(deps.ee_gate(n_calls=12))
         deps.ensure_ee()
         coords, aoi = deps.aoi_from_req(req)
         centroid = aoi.centroid(1)
         lon_deg, lat_deg = deps.centroid_lon_lat(centroid)
-        s, e = win["start_date"], win["end_date_exclusive"]
 
         ghi_info = sample_era5_period_ghi_kwh_m2_at_point(centroid, s, e, scale_m=ERA5_SCALE_M)
         regional_ghi_kwh_m2_period = float(ghi_info["value"])
@@ -571,6 +834,9 @@ def compute_yield(req: YieldRequest) -> dict[str, Any]:
 
         # Shade matrix: split the day into six 4-hour UTC bins. Same band-stacking trick
         # as above -- one reduction for all six bins rather than six separate calls.
+        # Buckets are UTC because the whole pipeline is UTC-aligned to ERA5,
+        # but a user in India reads "08-12" as morning when it is actually
+        # 13:30-17:30 local. Each bucket therefore carries both labels.
         bucket_specs = [
             ("00-04", 0, 4),
             ("04-08", 4, 8),
@@ -622,6 +888,8 @@ def compute_yield(req: YieldRequest) -> dict[str, Any]:
             shade_intervals.append(
                 {
                     "label": label,
+                    "label_utc": f"{label} UTC",
+                    "label_ist": _utc_bucket_to_ist(label),
                     "shade_fraction": round(shade_fraction, 5),
                     "shade_percent": round(shade_fraction * 100.0, 2),
                     "shade_area_m2": round(shade_area_m2, 2),
@@ -668,8 +936,39 @@ def compute_yield(req: YieldRequest) -> dict[str, Any]:
         soiling_penalty_percent = round((1.0 - soiling_info["soiling_retention_factor"]) * 100.0, 2)
         combined_penalty_percent = round((1.0 - combined_derate) * 100.0, 2)
 
+        # D8: every data path here has a fallback that returns a *plausible*
+        # number, distinguishable only by a `source` string buried in a nested
+        # dict. Collect them so a degraded result is visibly degraded instead
+        # of quietly wrong. See solaris.core.quality.
+        quality = DataQuality()
+        quality.record_source("regional_ghi", ghi_info.get("source"))
+        quality.record_source("beam_fraction", beam_info.get("source"))
+        quality.record_stats("uhi", uhi_info)
+        quality.record_stats("soiling", soiling_info)
+        quality.record_source("target_building", building_selection_source)
+        if soiling_info.get("soiling_retention_clamped"):
+            quality.record_clamp(
+                "soiling_retention",
+                "Soiling retention hit its floor, which means the measured "
+                "aerosol optical depth was outside anything the literature "
+                "supports. Check the input rather than trusting the loss.",
+            )
+        empty_buckets = [
+            interval["label"]
+            for interval in shade_intervals
+            if interval["shade_fraction"] == 0.0 and interval["label"] not in bucket_band
+        ]
+        quality.record_empty_shade_buckets(empty_buckets)
+        try:
+            quality.set_coverage(
+                window_coverage(s, e, latest=_cached_latest_available_date()).as_dict()
+            )
+        except Exception:
+            quality.note("Temporal coverage could not be determined.")
+
         out = {
             "status": "ok",
+            "data_quality": quality.as_dict(),
             "baseline_time_mode": win["mode"],
             "start_date": s,
             "end_date_exclusive": e,
@@ -754,11 +1053,34 @@ def compute_yield(req: YieldRequest) -> dict[str, Any]:
                 ],
             },
         }
-        return out
-    except HTTPException:
+        # Only cache a result whose window is fully covered: caching a partial
+        # answer would pin it for the whole TTL and leave it wrong after the
+        # data arrived.
+        coverage = quality.coverage or {}
+        cache_store(
+            cached,
+            out,
+            end_date_exclusive=e,
+            ttl_s=get_settings().cache_ttl_result_s,
+            coverage_complete=coverage.get("status") == "complete",
+        )
+        return JSONResponse(content=out, headers=cached.headers)
+    except (
+        HTTPException,
+        BudgetExceededError,
+        RateLimitExceededError,
+        ConcurrencyTimeoutError,
+    ):
+        # Limit failures are translated by the middleware into 429/503
+        # with a Retry-After; swallowing them here would report a quota
+        # problem as an internal error.
         raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e)) from e
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    finally:
+        # Releases the Earth Engine slot on every path. A no-op when the slot
+        # was never taken, which is the cache-hit case.
+        ee_stack.close()
 
 
 @app.post("/api/series")
@@ -875,7 +1197,15 @@ def compute_series(req: YieldRequest) -> dict[str, Any]:
             "labels": labels,
             "values": [round(v, 3) for v in values],
         }
-    except HTTPException:
+    except (
+        HTTPException,
+        BudgetExceededError,
+        RateLimitExceededError,
+        ConcurrencyTimeoutError,
+    ):
+        # Limit failures are translated by the middleware into 429/503
+        # with a Retry-After; swallowing them here would report a quota
+        # problem as an internal error.
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e)) from e

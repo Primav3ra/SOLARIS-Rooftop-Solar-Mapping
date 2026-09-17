@@ -172,36 +172,48 @@
             "shade_intervals": [
               {
                 "label": "00-04",
+                "label_ist": "05:30-09:30 IST",
+                "label_utc": "00-04 UTC",
                 "shade_area_m2": 4050.12,
                 "shade_fraction": 0.1099,
                 "shade_percent": 10.99
               },
               {
                 "label": "04-08",
+                "label_ist": "09:30-13:30 IST",
+                "label_utc": "04-08 UTC",
                 "shade_area_m2": 1333.65,
                 "shade_fraction": 0.0362,
                 "shade_percent": 3.62
               },
               {
                 "label": "08-12",
+                "label_ist": "13:30-17:30 IST",
+                "label_utc": "08-12 UTC",
                 "shade_area_m2": 2502.29,
                 "shade_fraction": 0.0679,
                 "shade_percent": 6.79
               },
               {
                 "label": "12-16",
+                "label_ist": "17:30-21:30 IST",
+                "label_utc": "12-16 UTC",
                 "shade_area_m2": 5060.72,
                 "shade_fraction": 0.1373,
                 "shade_percent": 13.73
               },
               {
                 "label": "16-20",
+                "label_ist": "21:30-01:30 IST",
+                "label_utc": "16-20 UTC",
                 "shade_area_m2": 0.0,
                 "shade_fraction": 0.0,
                 "shade_percent": 0.0
               },
               {
                 "label": "20-24",
+                "label_ist": "01:30-05:30 IST",
+                "label_utc": "20-24 UTC",
                 "shade_area_m2": 0.0,
                 "shade_fraction": 0.0,
                 "shade_percent": 0.0
@@ -244,36 +256,48 @@
     "shade_intervals": [
       {
         "label": "00-04",
+        "label_ist": "05:30-09:30 IST",
+        "label_utc": "00-04 UTC",
         "shade_area_m2": 4050.12,
         "shade_fraction": 0.1099,
         "shade_percent": 10.99
       },
       {
         "label": "04-08",
+        "label_ist": "09:30-13:30 IST",
+        "label_utc": "04-08 UTC",
         "shade_area_m2": 1333.65,
         "shade_fraction": 0.0362,
         "shade_percent": 3.62
       },
       {
         "label": "08-12",
+        "label_ist": "13:30-17:30 IST",
+        "label_utc": "08-12 UTC",
         "shade_area_m2": 2502.29,
         "shade_fraction": 0.0679,
         "shade_percent": 6.79
       },
       {
         "label": "12-16",
+        "label_ist": "17:30-21:30 IST",
+        "label_utc": "12-16 UTC",
         "shade_area_m2": 5060.72,
         "shade_fraction": 0.1373,
         "shade_percent": 13.73
       },
       {
         "label": "16-20",
+        "label_ist": "21:30-01:30 IST",
+        "label_utc": "16-20 UTC",
         "shade_area_m2": 0.0,
         "shade_fraction": 0.0,
         "shade_percent": 0.0
       },
       {
         "label": "20-24",
+        "label_ist": "01:30-05:30 IST",
+        "label_utc": "20-24 UTC",
         "shade_area_m2": 0.0,
         "shade_fraction": 0.0,
         "shade_percent": 0.0

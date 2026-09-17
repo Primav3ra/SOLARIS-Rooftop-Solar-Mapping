@@ -66,3 +66,31 @@ def spa_reference():
         r["elevation_deg"] = float(r["elevation_deg"])
         r["azimuth_deg"] = float(r["azimuth_deg"])
     return rows
+
+
+@pytest.fixture(autouse=True)
+def _test_limits(monkeypatch):
+    """
+    Disable rate limiting for the suite, and reset the shared counters.
+
+    Necessary because the limiter is process-global and every TestClient
+    request shares one identity, so a module making more than
+    ``rate_limit_per_minute`` requests starts getting 429s partway through --
+    which showed up as a confusing KeyError on a response body that was
+    actually an error envelope. Limiting behaviour is tested explicitly in
+    tests/unit/test_core.py and test_api_limits.py rather than incidentally
+    here.
+    """
+    monkeypatch.setenv("SOLARIS_RATE_LIMIT_PER_MINUTE", "0")
+    monkeypatch.setenv("SOLARIS_RATE_LIMIT_PER_DAY", "0")
+
+    from solaris.core import cache, limits
+    from solaris.core.config import get_settings
+
+    get_settings.cache_clear()
+    limits.reset_limits()
+    cache.reset_cache()
+    yield
+    limits.reset_limits()
+    cache.reset_cache()
+    get_settings.cache_clear()

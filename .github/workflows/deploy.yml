@@ -1,0 +1,126 @@
+name: Deploy to Cloud Run
+
+# Keyless: authentication is via Workload Identity Federation, so there is no
+# service-account JSON key anywhere -- not in a secret, not in the repo.
+#
+# Two setup details are the usual failure points, both documented in
+# docs/deployment.md:
+#   1. The WIF provider MUST carry an attribute condition pinning
+#      assertion.repository to this repo. Without it the pool is usable by any
+#      GitHub repository, which is the most common misconfiguration.
+#   2. The runtime service account's email must be registered as an Earth
+#      Engine user. Miss that and every request 403s with nothing in the code
+#      to explain why.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: "Type 'deploy' to confirm"
+        required: true
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: deploy-prod
+  cancel-in-progress: false
+
+env:
+  SERVICE: solaris
+  # Mumbai: lowest latency for Indian users and for the India-region datasets.
+  REGION: asia-south1
+
+jobs:
+  deploy:
+    if: github.event_name == 'push' || inputs.confirm == 'deploy'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.WIF_PROVIDER }}
+          service_account: ${{ vars.DEPLOY_SERVICE_ACCOUNT }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure Artifact Registry
+        run: gcloud auth configure-docker ${{ env.REGION }}-docker.pkg.dev --quiet
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: |
+            ${{ env.REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT }}/solaris/api:${{ github.sha }}
+            ${{ env.REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT }}/solaris/api:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Record the current revision, for rollback
+        id: previous
+        run: |
+          PREV=$(gcloud run services describe "$SERVICE" --region "$REGION" \
+            --format='value(status.traffic[0].revisionName)' 2>/dev/null || echo "")
+          echo "revision=$PREV" >> "$GITHUB_OUTPUT"
+          echo "previous revision: ${PREV:-none}"
+
+      - name: Deploy
+        run: |
+          gcloud run deploy "$SERVICE" \
+            --image "${{ env.REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT }}/solaris/api:${{ github.sha }}" \
+            --region "$REGION" \
+            --platform managed \
+            --allow-unauthenticated \
+            --service-account "${{ vars.GEE_SERVICE_ACCOUNT }}" \
+            --min-instances 0 \
+            --max-instances 2 \
+            --concurrency 8 \
+            --cpu 1 \
+            --memory 1Gi \
+            --timeout 120 \
+            --cpu-boost \
+            --set-env-vars "SOLARIS_ENV=prod,SOLARIS_GIT_SHA=${{ github.sha }},GEE_PROJECT_ID=${{ vars.GEE_PROJECT_ID }},SOLARIS_GEE_AUTH_MODE=adc,SOLARIS_CORS_ORIGINS=${{ vars.PUBLIC_URL }},SOLARIS_CACHE_BACKEND=memory,SOLARIS_LOG_FORMAT=json"
+          # min-instances stays 0 for near-zero idle cost; --cpu-boost absorbs
+          # the ee.Initialize() round-trip on a cold start. max-instances 2 is
+          # also a hard ceiling on damage, and it makes the in-process rate
+          # limiter effectively global.
+
+      - name: Smoke test
+        id: smoke
+        run: |
+          URL=$(gcloud run services describe "$SERVICE" --region "$REGION" --format='value(status.url)')
+          echo "url=$URL" >> "$GITHUB_OUTPUT"
+          set -e
+          curl -fsS "$URL/api/health"
+          curl -fsS "$URL/api/version"
+          # /api/ready is the one that matters: it establishes the Earth Engine
+          # session, so it catches an unregistered service account.
+          READY=$(curl -fsS "$URL/api/ready")
+          echo "$READY"
+          echo "$READY" | grep -q '"ready":true' || {
+            echo "::error::Earth Engine session failed. Check that ${{ vars.GEE_SERVICE_ACCOUNT }} is registered as an Earth Engine user."
+            exit 1
+          }
+          curl -fsS "$URL/api/presets" > /dev/null
+          echo "smoke checks passed"
+
+      - name: Roll back on failure
+        if: failure() && steps.previous.outputs.revision != ''
+        run: |
+          echo "::warning::Rolling back to ${{ steps.previous.outputs.revision }}"
+          gcloud run services update-traffic "$SERVICE" --region "$REGION" \
+            --to-revisions "${{ steps.previous.outputs.revision }}=100"
+
+      - name: Summary
+        if: success()
+        run: |
+          echo "### Deployed" >> "$GITHUB_STEP_SUMMARY"
+          echo "- URL: ${{ steps.smoke.outputs.url }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Commit: \`${{ github.sha }}\`" >> "$GITHUB_STEP_SUMMARY"

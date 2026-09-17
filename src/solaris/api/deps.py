@@ -246,6 +246,28 @@ def _ee_tile_template(image: ee.Image, vis: dict[str, Any]) -> str:
     return m["tile_fetcher"].url_format
 
 
+def ee_gate(n_calls: int = 1):
+    """
+    A bounded Earth Engine slot, counted against the daily budget.
+
+    Wrap any block that makes ``getInfo()`` calls::
+
+        with deps.ee_gate(n_calls=6):
+            ...
+
+    Two things this does that a request timeout cannot. It bounds concurrency:
+    every endpoint is a sync ``def``, so FastAPI runs it on a threadpool of 40,
+    and without a cap one instance can hold 40 blocking ``getInfo()`` calls
+    open at once. And it counts round-trips against a daily budget denominated
+    in the resource actually being consumed, rather than in HTTP requests.
+    """
+    from solaris.api.middleware import record_ee_calls
+    from solaris.core.limits import get_gate
+
+    record_ee_calls(n_calls)
+    return get_gate().slot(n_calls=n_calls)
+
+
 # Public aliases. The underscore names remain the implementations; these are
 # what routers and tests should reference, so that monkeypatching this module
 # affects every caller.

@@ -75,20 +75,33 @@ def resolve_temporal_window(
     month: int | None,
     start_date: str | None,
     end_date_exclusive: str | None,
+    max_year: int | None = None,
 ) -> dict[str, Any]:
     """
-    Map UI mode to [start_date, end_date_exclusive) for ERA5 and solar alignment.
-    monthly: one UTC calendar month.
-    daily: exactly one UTC calendar day (end = start + 1 day).
+    Map a UI mode to ``[start_date, end_date_exclusive)`` for ERA5 and solar
+    alignment. ``monthly`` is one UTC calendar month; ``daily`` is exactly one
+    UTC calendar day.
+
+    ``max_year`` is the latest selectable year. Callers should pass a
+    **data-derived** bound from :mod:`solaris.gee.coverage`; it defaults to the
+    last complete calendar year only so this module stays free of any Earth
+    Engine dependency and remains testable offline.
+
+    Why that matters: the ceiling used to be ``date.today().year - 1``
+    unconditionally, so a quarter of the current year that finished months ago
+    was refused purely because the calendar year had not ended. Whether a
+    window is computable depends on whether the data exists, not on the date.
     """
-    ly = _last_complete_calendar_year()
+    ly = max_year if max_year is not None else _last_complete_calendar_year()
     mode = (baseline_mode or "yearly").lower()
     if mode not in ("yearly", "quarterly", "monthly", "daily"):
         raise ValueError("baseline_mode must be yearly, quarterly, monthly, or daily")
     if mode == "yearly":
         y = year if year is not None else ly
         if y < 2000 or y > ly:
-            raise ValueError(f"year must be between 2000 and {ly} (last complete calendar year)")
+            raise ValueError(
+                f"year must be between 2000 and {ly} (the latest year with available data)"
+            )
         s, e = f"{y}-01-01", f"{y + 1}-01-01"
         return {
             "mode": "yearly",

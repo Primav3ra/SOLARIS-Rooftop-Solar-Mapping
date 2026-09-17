@@ -102,6 +102,17 @@ ERA5_HOURLY_SCALE_M = 27_830.0
 MODIS_SCALE_M = 1000.0
 
 
+#: Shortest window for which an annualised figure is reported.
+#:
+#: Annualising by ``x 365.25/days`` assumes the window represents the year,
+#: which a short one does not: a clear December day in Delhi annualises to
+#: roughly double the true figure and a monsoon day to roughly half. A month is
+#: the shortest window where within-window averaging makes the extrapolation
+#: defensible, and even then it carries seasonal bias. Shorter windows get the
+#: period total only -- which is always correct.
+MIN_DAYS_FOR_ANNUALISATION = 28
+
+
 # ---------------------------------------------------------------------------
 # Request limits -- the primary defence against Earth Engine quota exhaustion
 # ---------------------------------------------------------------------------

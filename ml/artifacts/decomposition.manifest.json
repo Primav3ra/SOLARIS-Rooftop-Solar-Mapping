@@ -1,0 +1,49 @@
+{
+  "envelope": {
+    "feature_names": [
+      "kt",
+      "sin_elevation",
+      "air_mass",
+      "sin_doy",
+      "cos_doy",
+      "abs_latitude",
+      "kt_persistence"
+    ],
+    "maximum": [
+      0.8529990230615783,
+      0.998297011275333,
+      7.686804872858817,
+      0.9724075561219968,
+      0.9668929289391521,
+      34.1526,
+      2.3206820070909795
+    ],
+    "minimum": [
+      0.03958742893062556,
+      0.12260458722528403,
+      1.0013996585356915,
+      -0.9708824104813836,
+      -0.9736476020539838,
+      13.0827,
+      0.21746446627553606
+    ]
+  },
+  "feature_names": [
+    "kt",
+    "sin_elevation",
+    "air_mass",
+    "sin_doy",
+    "cos_doy",
+    "abs_latitude",
+    "kt_persistence"
+  ],
+  "kind": "gradient_boosting",
+  "n_test": 396,
+  "n_train": 1830,
+  "name": "decomposition",
+  "notes": "gradient_boosting beats Erbs by 0.374 skill, clearing the 0.1 gate declared before training.",
+  "skill_vs_erbs": 0.374,
+  "test_rmse": 0.08927,
+  "trained_utc": "2026-09-14T15:05:21Z",
+  "version": "20260914"
+}

@@ -1,0 +1,68 @@
+name: Integration (live Earth Engine)
+
+# Deliberately off the critical path. These tests need real Earth Engine, so
+# they are not a required check: a gate that depends on a third-party API goes
+# red often enough that people learn to bypass it, at which point it protects
+# nothing.
+#
+# Keyless via Workload Identity Federation -- no service-account JSON in a
+# GitHub secret. See docs/deployment.md for the one-time setup, and note the
+# step that silently 403s people: the runtime service account's email must
+# itself be registered as an Earth Engine user.
+
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+  pull_request:
+    types: [labeled, synchronize]
+    paths:
+      - "src/solaris/gee/**"
+      - "src/solaris/physics/**"
+      - "src/solaris/evals/**"
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  gee:
+    if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'run-integration')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -e ".[dev,physics]"
+
+      - id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.WIF_PROVIDER }}
+          service_account: ${{ vars.GEE_SERVICE_ACCOUNT }}
+
+      - name: Live Earth Engine tests
+        env:
+          GEE_PROJECT_ID: ${{ vars.GEE_PROJECT_ID }}
+          SOLARIS_GEE_AUTH_MODE: adc
+        # Two jobs in one suite. The dataset-schema checks catch catalog drift,
+        # which is the likeliest cause of a silent production break. The
+        # semantics probes assert what the real API does for the behaviours the
+        # offline fake reproduces -- if a probe fails, the fake is wrong and
+        # every offline test built on it is suspect.
+        run: pytest -m gee -v
+
+      - name: Refresh reference data and re-run the harness
+        if: github.event_name == 'schedule'
+        run: |
+          python -m solaris.evals.fetch --years 2022
+          python -m solaris.evals.harness --quiet
+          cat evals/reports/latest.md >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: integration-report
+          path: evals/reports/

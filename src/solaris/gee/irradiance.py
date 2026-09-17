@@ -142,9 +142,28 @@ def get_era5_range_info(
     )
     total = float(r["value"])
     days = max((date.fromisoformat(end_date_exclusive) - date.fromisoformat(start_date)).days, 1)
+    # D6: annualising by x365.25/days assumes the window is representative of
+    # the year, which a short window is not -- a clear December day in Delhi
+    # annualises to roughly double the true figure, a monsoon day to roughly
+    # half. Below _C.MIN_DAYS_FOR_ANNUALISATION the field is omitted entirely
+    # rather than reported with a caveat nobody reads. The period total is
+    # always present and always correct.
+    annualised = total * (365.25 / days) if days >= _C.MIN_DAYS_FOR_ANNUALISATION else None
+
     return {
         "range_total_ghi_kwh_m2": total,
-        "range_annualized_ghi_kwh_m2_year": total * (365.25 / days),
+        "range_annualized_ghi_kwh_m2_year": annualised,
+        "annualisation": (
+            "omitted" if annualised is None else "naive_scaling_no_seasonal_correction"
+        ),
+        "annualisation_note": (
+            f"Window is {days} day(s); annualising below "
+            f"{_C.MIN_DAYS_FOR_ANNUALISATION} days would assume it represents the "
+            "whole year. Use range_total_ghi_kwh_m2."
+            if annualised is None
+            else "Scaled by 365.25/days with no seasonal correction, so a "
+            "window biased towards one season carries that bias."
+        ),
         "range_start_date": start_date,
         "range_end_date_exclusive": end_date_exclusive,
         "range_days": days,
@@ -238,12 +257,15 @@ def get_roof_masked_era5_baseline_for_date_range(
     range_info = get_era5_range_info(aoi, start_date, end_date_exclusive, scale_m)
     roof_area = _compute_roof_area_m2(roof_mask, aoi, roof_area_scale_m)
     period_total = float(range_info["range_total_ghi_kwh_m2"])
-    annualized = float(range_info["range_annualized_ghi_kwh_m2_year"])
+    raw_annualised = range_info["range_annualized_ghi_kwh_m2_year"]
+    annualized = float(raw_annualised) if raw_annualised is not None else None
     return {
         "roof_area_m2": roof_area,
         "regional_irradiance_kwh_m2_year": annualized,
         "period_ghi_kwh_m2": period_total,
-        "pre_penalty_total_kwh_year": annualized * roof_area if roof_area > 0 else 0.0,
+        "pre_penalty_total_kwh_year": (
+            annualized * roof_area if (annualized is not None and roof_area > 0) else None
+        ),
         "pre_penalty_total_kwh_period": period_total * roof_area if roof_area > 0 else 0.0,
         "range_start_date": start_date,
         "range_end_date_exclusive": end_date_exclusive,
