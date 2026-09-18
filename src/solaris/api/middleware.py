@@ -13,11 +13,11 @@ Handlers now return a typed error with a request id; the detail goes to the log.
 
 Identity, and why not IP alone
 ------------------------------
-Rate limiting is keyed on the signed-in subject when present, falling back to
-the client IP. IP alone is weak in India specifically: mobile carriers use
-carrier-grade NAT, so thousands of users share one egress address. An IP-keyed
-limit punishes them collectively while one determined user simply rotates
-addresses.
+Rate limiting is keyed on an opaque per-session token where one is presented,
+falling back to the client IP. IP alone is weak in India specifically: mobile
+carriers use carrier-grade NAT, so thousands of subscribers share one egress
+address. An IP-keyed limit restricts them collectively while one determined
+caller rotates addresses.
 """
 
 from __future__ import annotations
@@ -34,6 +34,8 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
+from solaris.api.auth import AllowanceExceededError
+from solaris.api.deps import EarthEngineUnavailableError
 from solaris.core.config import Settings
 from solaris.core.limits import (
     BudgetExceededError,
@@ -117,13 +119,29 @@ def request_identity(request: Request) -> tuple[str, str]:
     """
     ``(identity, kind)`` for rate limiting.
 
-    Prefers a verified subject over an IP. See the module docstring for why IP
-    alone is a poor key here.
+    Prefers the opaque guest token over the client address. See the module
+    docstring for why IP alone is a poor key here.
     """
-    subject = getattr(request.state, "subject", None)
-    if subject:
-        return f"sub:{subject}", "subject"
+    identity = getattr(request.state, "identity", None)
+    if identity is not None:
+        return identity.key, identity.key.split(":", 1)[0]
     return f"ip:{client_ip(request)}", "ip"
+
+
+def attach_identity(request: Request) -> None:
+    """
+    Resolve the caller and record it on ``request.state``.
+
+    Done in middleware rather than as a route dependency so every path gets a
+    consistent identity, including the rate limiter, which runs before any
+    route function.
+    """
+    from solaris.api.auth import GUEST_HEADER, resolve_identity
+
+    request.state.identity = resolve_identity(
+        guest_token=request.headers.get(GUEST_HEADER),
+        client_ip_address=client_ip(request),
+    )
 
 
 def cloud_trace(request: Request) -> str | None:
@@ -155,13 +173,24 @@ class ObservabilityMiddleware(BaseHTTPMiddleware):
         started = time.perf_counter()
         trace = cloud_trace(request)
 
-        identity, identity_kind = request_identity(request)
+        identity, identity_kind = "ip:pending", "ip"
 
         try:
+            attach_identity(request)
+            identity, identity_kind = request_identity(request)
             if request.url.path not in EXEMPT_PATHS:
                 check_rate_limit(identity)
             response = await call_next(request)
             status = response.status_code
+        except AllowanceExceededError as exc:
+            status = 403
+            response = _error_response(
+                status,
+                "allowance_exhausted",
+                str(exc),
+                request_id,
+                extra={"used": exc.used, "allowance": exc.allowance},
+            )
         except RateLimitExceededError as exc:
             status = 429
             response = _error_response(
@@ -191,6 +220,27 @@ class ObservabilityMiddleware(BaseHTTPMiddleware):
             status = 503
             response = _error_response(
                 status, "busy", str(exc), request_id, headers={"Retry-After": "5"}
+            )
+        except EarthEngineUnavailableError as exc:
+            # 503, not 500: the server is fine, its Earth Engine configuration
+            # is not. The hint is included only outside production, because it
+            # is written for whoever is configuring the service and a public
+            # deployment should not narrate its own setup to arbitrary callers.
+            status = 503
+            logger.error(
+                "earth engine unavailable",
+                extra={"extra_fields": {"hint": exc.hint}},
+            )
+            from solaris.core.config import get_settings
+
+            extra = {} if get_settings().is_production else {"hint": exc.hint}
+            response = _error_response(
+                status,
+                "earth_engine_unavailable",
+                str(exc),
+                request_id,
+                headers={"Retry-After": "30"},
+                extra=extra,
             )
         except Exception:
             # The detail goes to the log, never to the client: raw Earth Engine
@@ -251,13 +301,21 @@ def _error_response(
     message: str,
     request_id: str,
     headers: dict[str, str] | None = None,
+    extra: dict[str, object] | None = None,
 ) -> JSONResponse:
+    """
+    One error shape for every failure mode.
+
+    ``extra`` carries machine-readable detail the frontend acts on -- the guest
+    allowance counts, for instance, so the sign-in prompt can say how many
+    computations were used rather than just that something was refused.
+    """
+    error: dict[str, object] = {"code": code, "message": message}
+    if extra:
+        error.update(extra)
     return JSONResponse(
         status_code=status,
-        content={
-            "error": {"code": code, "message": message},
-            "request_id": request_id,
-        },
+        content={"error": error, "request_id": request_id},
         headers=headers or {},
     )
 

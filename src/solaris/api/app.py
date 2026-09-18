@@ -29,6 +29,8 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from solaris.api import deps, middleware
+from solaris.api.auth import GUEST_HEADER, AllowanceExceededError, get_guest_allowance
+from solaris.api.deps import EarthEngineUnavailableError
 from solaris.api.schemas import (
     BaselineRequest,
     BuildingsRequest,
@@ -77,6 +79,13 @@ from solaris.gee.penalties import (
     net_irradiance_image,
 )
 from solaris.gee.rooftops import get_rooftop_area_m2_info
+
+#: Upper end of the shadow-frequency colour stretch.
+#:
+#: Rooftop shadow frequency rarely exceeds this. Stretching 0-1 instead pushed
+#: every real value into the darkest tenth of the palette, which is why that
+#: overlay appeared blank.
+SHADOW_VIS_MAX = 0.35
 
 # Re-exported for callers and tests that reach for these on this module.
 gee_project_id = deps.gee_project_id
@@ -311,6 +320,45 @@ def config() -> dict[str, Any]:
     return get_settings().redacted()
 
 
+# ---------------------------------------------------------------------------
+# Guest sessions
+# ---------------------------------------------------------------------------
+
+
+@app.post("/api/auth/guest")
+def auth_guest() -> dict[str, Any]:
+    """
+    Mint an opaque guest session token.
+
+    The interface calls this once and returns the token in
+    ``X-Solaris-Guest``. It is not a credential and grants nothing beyond the
+    session allowance; it exists so that allowance is per browser session
+    rather than per IP address, which behind carrier-grade NAT would mean one
+    allowance shared across thousands of subscribers.
+    """
+    allowance = get_guest_allowance()
+    return {
+        "guest_token": allowance.issue(),
+        "allowance": allowance.allowance,
+        "header": GUEST_HEADER,
+    }
+
+
+@app.get("/api/auth/me")
+def auth_me(request: Request) -> dict[str, Any]:
+    """
+    What this session has left.
+
+    Lets the interface show a remaining count rather than leaving a visitor to
+    discover the limit by reaching it.
+    """
+    identity = getattr(request.state, "identity", None)
+    return {
+        "identity": identity.as_dict() if identity else {"kind": "unknown"},
+        "allowance": deps.allowance_state(request),
+    }
+
+
 @app.get("/api/ready")
 def ready() -> dict[str, Any]:
     """
@@ -322,22 +370,33 @@ def ready() -> dict[str, Any]:
     """
     settings = get_settings()
     checks: dict[str, Any] = {"config": "ok", "earth_engine": "unknown"}
+    hint = ""
     try:
         deps.ensure_ee()
         checks["earth_engine"] = "ok"
+    except deps.EarthEngineUnavailableError as exc:
+        checks["earth_engine"] = "unavailable"
+        hint = exc.hint
     except Exception as exc:
         checks["earth_engine"] = f"error: {type(exc).__name__}"
 
-    return {
+    out: dict[str, Any] = {
         "ready": checks["earth_engine"] == "ok",
         "checks": checks,
         "project": settings.gee_project_id,
         "auth_mode": settings.gee_auth_mode,
     }
+    # An actionable hint, because "error: EEException" tells whoever is setting
+    # this up nothing at all. This endpoint already reports configuration by
+    # design -- it is what the post-deploy smoke test reads -- so the hint adds
+    # no exposure that the project id has not already.
+    if hint:
+        out["hint"] = hint
+    return out
 
 
 @app.post("/api/baseline")
-def compute_baseline(req: BaselineRequest) -> dict[str, Any]:
+def compute_baseline(req: BaselineRequest, request: Request) -> dict[str, Any]:
     """
     AOI rooftop area plus an ERA5 irradiance summary for the selected window.
 
@@ -426,6 +485,8 @@ def compute_baseline(req: BaselineRequest) -> dict[str, Any]:
         }
     except (
         HTTPException,
+        AllowanceExceededError,
+        EarthEngineUnavailableError,
         BudgetExceededError,
         RateLimitExceededError,
         ConcurrencyTimeoutError,
@@ -484,9 +545,6 @@ def tiles(req: TilesRequest) -> dict[str, Any]:
         beam_fraction = float(beam_info["beam_fraction"])
         uhi_info = UHIPenalty.stats(aoi, s)
         soiling_info = SoilingPenalty.stats(aoi, s)
-        combined_derate = float(uhi_info["uhi_derate_factor"]) * float(
-            soiling_info["soiling_retention_factor"]
-        )
 
         net_irr = net_irradiance_image(
             regional_ghi_kwh_m2_period,
@@ -497,16 +555,33 @@ def tiles(req: TilesRequest) -> dict[str, Any]:
             sky_view_factor=svf_img,
         )
 
+        # Every per-pixel layer is masked to the roof. Shadow and sky-view are
+        # only defined on a roof, and rendering them across the whole area of
+        # interest put a wash of colour over streets and parks where the model
+        # makes no claim at all.
+        roofs_only = roof_mask.selfMask()
+
         if req.layer == "roof_mask":
-            img = roof_mask.selfMask()
+            img = roofs_only
             vis = {"min": 0, "max": 1, "palette": ["00e5ff"]}
         elif req.layer == "shadow_frequency":
-            img = shadow_freq.clamp(0, 1)
-            vis = {"min": 0, "max": 1, "palette": ["0b1020", "f97316"]}
+            # Stretched over the range roofs actually occupy, not 0-1.
+            #
+            # Rooftop shadow frequency is typically 0.02-0.10 and rarely passes
+            # 0.3, so a 0-1 stretch mapped every real value into the first tenth
+            # of the palette and the layer rendered as a uniform dark wash --
+            # indistinguishable from "no data" and the reason this overlay
+            # looked useless. Measured for June over Delhi: mean 0.024.
+            img = shadow_freq.updateMask(roofs_only).clamp(0, SHADOW_VIS_MAX)
+            vis = {
+                "min": 0.0,
+                "max": SHADOW_VIS_MAX,
+                "palette": ["1e3a5f", "3b82f6", "fbbf24", "ef4444"],
+            }
         elif req.layer == "sky_view_factor":
-            img = svf_img.clip(aoi).clamp(0, 1)
+            img = svf_img.updateMask(roofs_only).clamp(0, 1)
             # Low SVF (sky blocked) -> warm; high SVF (open sky) -> cool/green.
-            vis = {"min": 0.5, "max": 1.0, "palette": ["ef4444", "f59e0b", "22c55e"]}
+            vis = {"min": 0.6, "max": 1.0, "palette": ["ef4444", "f59e0b", "22c55e"]}
         elif req.layer == "temperature_delta":
             # UHI = urban mean LST - ~30km background focal mean (see UHIPenalty.stats).
             uhi_year = int(s[:4])
@@ -520,25 +595,49 @@ def tiles(req: TilesRequest) -> dict[str, Any]:
                 .subtract(UHIPenalty.K_TO_C_OFFSET)
                 .rename("LST_celsius")
             )
+            # Metres, matching UHIPenalty.stats. A pixel-denominated kernel
+            # resolves against the *request* projection, so at tile-pyramid
+            # scales this window spanned hundreds of kilometres rather than 30
+            # -- the same defect that was fixed in the reduction path but left
+            # behind here, which is why the map and the number disagreed.
             background = lst.focal_mean(
-                radius=UHIPenalty.BACKGROUND_KERNEL_PX,
+                radius=UHIPenalty.BACKGROUND_KERNEL_M,
                 kernelType="circle",
-                units="pixels",
+                units="meters",
             )
             img = lst.subtract(background).rename("delta_t_uhi_celsius").clip(aoi).clamp(-3.0, 8.0)
             # Typical Indian UHI anomalies: ~2-6 degC (but allow a bit wider).
             # Avoid the bright yellow/orange used by irradiance visualizations; keep it cleaner.
             vis = {"min": -3.0, "max": 8.0, "palette": ["2563eb", "22c55e", "a855f7", "ef4444"]}
         elif req.layer == "combined_derate":
-            img = ee.Image.constant(combined_derate).rename("combined_derate").clip(aoi)
-            vis = {"min": 0.9, "max": 1.0, "palette": ["ef4444", "f59e0b", "22c55e"]}
+            # Removed from the layer list, and rejected rather than rendered.
+            #
+            # The heat-island and soiling derates are AOI-wide *scalars*, so
+            # this layer could only ever draw a single flat colour over the
+            # whole box. It was not a poor visualisation, it was a map of a
+            # number that has no spatial variation -- and drawing it implied a
+            # per-pixel result the model does not produce. The spatially varying
+            # part of the same physics is `temperature_delta`.
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "combined_derate is an area-wide scalar, not a per-pixel "
+                    "layer, so it cannot be mapped. Use temperature_delta for "
+                    "the heat-island field, or read the derate from /api/yield."
+                ),
+            )
         else:
-            img = net_irr.clip(aoi)
-            # Dynamic max for visibility: assume max ~ 1.1x baseline as rough upper bound.
+            # Net irradiance, stretched across the range roofs occupy.
+            #
+            # A 0-to-GHI stretch put every roof in a narrow band near the top of
+            # the palette, because net retention is ~0.7-0.9 of the baseline
+            # everywhere. Anchoring the low end at half the baseline spends the
+            # palette on the variation that exists.
+            img = net_irr.updateMask(roofs_only)
             vis = {
-                "min": 0,
-                "max": max(50.0, regional_ghi_kwh_m2_period * 1.05),
-                "palette": ["0b1020", "2563eb", "22c55e", "f59e0b"],
+                "min": max(1.0, regional_ghi_kwh_m2_period * 0.5),
+                "max": max(2.0, regional_ghi_kwh_m2_period * 0.95),
+                "palette": ["1e3a5f", "2563eb", "22c55e", "fbbf24"],
             }
 
         url = deps.ee_tile_template(img, vis)
@@ -562,6 +661,8 @@ def tiles(req: TilesRequest) -> dict[str, Any]:
         }
     except (
         HTTPException,
+        AllowanceExceededError,
+        EarthEngineUnavailableError,
         BudgetExceededError,
         RateLimitExceededError,
         ConcurrencyTimeoutError,
@@ -613,6 +714,8 @@ def buildings(req: BuildingsRequest) -> dict[str, Any]:
         }
     except (
         HTTPException,
+        AllowanceExceededError,
+        EarthEngineUnavailableError,
         BudgetExceededError,
         RateLimitExceededError,
         ConcurrencyTimeoutError,
@@ -626,7 +729,7 @@ def buildings(req: BuildingsRequest) -> dict[str, Any]:
 
 
 @app.post("/api/yield")
-def compute_yield(req: YieldRequest) -> dict[str, Any]:
+def compute_yield(req: YieldRequest, request: Request) -> dict[str, Any]:
     """
     Single-building PV energy for the same temporal window as /api/baseline.
 
@@ -660,7 +763,15 @@ def compute_yield(req: YieldRequest) -> dict[str, Any]:
         # to one entry rather than two.
         cached = cache_lookup("/api/yield", req.model_dump(), start_date=s, end_date_exclusive=e)
         if cached.value is not None:
-            return JSONResponse(content=cached.value, headers=cached.headers)
+            return JSONResponse(
+                content=cached.value,
+                headers={**cached.headers, **deps.allowance_headers(request)},
+            )
+
+        # A miss means real work, so this is where a guest allowance is spent.
+        # Deliberately after the lookup: a cached answer is free to serve, so
+        # charging for it would punish exactly the requests that cost nothing.
+        deps.charge_computation(request)
 
         # Bound concurrent Earth Engine work and count it against the daily
         # budget. /api/yield makes roughly a dozen round-trips.
@@ -699,16 +810,24 @@ def compute_yield(req: YieldRequest) -> dict[str, Any]:
         svf_img = SkyViewFactor.image(building_height)
 
         uhi_info = UHIPenalty.stats(aoi, s)
-        soiling_info = SoilingPenalty.stats(aoi, s)
-
-        net_irr = net_irradiance_image(
-            regional_ghi_kwh_m2_period,
-            shadow_freq,
-            beam_fraction=beam_fraction,
-            uhi_derate=uhi_info["uhi_derate_factor"],
-            soiling_retention=soiling_info["soiling_retention_factor"],
-            sky_view_factor=svf_img,
+        # The windowed model: AOD sets the deposition rate, ERA5-Land rainfall
+        # sets the cleaning events, and the loss is averaged over the actual
+        # window. The legacy path returned one annual number whatever the
+        # window, which for a single monsoon day was wrong by roughly an order
+        # of magnitude.
+        soiling_info = SoilingPenalty.stats_windowed(
+            aoi,
+            s,
+            e,
+            cleaning_interval_days=req.cleaning_interval_days,
+            point=centroid,
         )
+
+        # The fully-derated image is no longer built here. It existed only to be
+        # reduced as the fifth band of the energy stack, and that stage is now
+        # derived from the sky-view stage by scalar multiplication -- see the note
+        # on sum_stack below. The reported net irradiance comes from the mean
+        # reduction and the same scalars, so nothing is lost.
 
         period_label = {
             "yearly": "calendar_year",
@@ -744,25 +863,29 @@ def compute_yield(req: YieldRequest) -> dict[str, Any]:
             soiling_retention=1.0,
             sky_view_factor=svf_img,
         )
-        uhi_only_irr = net_irradiance_image(
-            regional_ghi_kwh_m2_period,
-            shadow_freq,
-            beam_fraction=beam_fraction,
-            uhi_derate=float(uhi_info["uhi_derate_factor"]),
-            soiling_retention=1.0,
-            sky_view_factor=svf_img,
-        )
 
-        # Stack every stage's energy (irr * roof_mask * area) + the roof area itself into
-        # one image and sum it all in a single getInfo -- one round-trip instead of six.
+        # Stack the stages' energy (irr * roof_mask * area) plus the roof area into one
+        # image and sum it in a single getInfo -- one round-trip instead of six.
+        #
+        # Only the *structurally distinct* stages go in. The heat-island and soiling
+        # stages are the sky-view stage multiplied by positive scalars, so they are
+        # derived in Python below instead of being reduced separately. The algebra is
+        # exact: net_irradiance_image folds the derates into a scalar coefficient and
+        # then floors at zero, and max(0, k*r) == k*max(0, r) for k > 0.
+        #
+        # This is not a micro-optimisation. Each geometric stage embeds the whole
+        # directional shadow trace -- roughly 31 sun positions by up to 12 sample
+        # distances -- plus the sky-view fan of 8 azimuths by 5 radii. Stacking five
+        # copies of that tree made Earth Engine answer **"User memory limit
+        # exceeded"** for an ordinary Delhi query, so the endpoint failed outright
+        # rather than being slow. Three bands instead of five, and the two derived
+        # stages cost nothing.
         area_img = roof_mask.toFloat().multiply(ee.Image.pixelArea())
         sum_stack = (
             baseline_irr.multiply(area_img)
             .rename("e_baseline")
             .addBands(shadow_only_irr.multiply(area_img).rename("e_shadow"))
             .addBands(svf_only_irr.multiply(area_img).rename("e_svf"))
-            .addBands(uhi_only_irr.multiply(area_img).rename("e_uhi"))
-            .addBands(net_irr.multiply(area_img).rename("e_soiling"))
             .addBands(area_img.rename("roof_area"))
         )
         sum_raw = (
@@ -771,6 +894,10 @@ def compute_yield(req: YieldRequest) -> dict[str, Any]:
                 geometry=building_geom,
                 scale=4.0,
                 maxPixels=1e7,
+                # Splits the region into smaller tiles, trading round-trip time for
+                # peak memory. The canonical remedy for the limit above, and cheap
+                # insurance for a dense AOI where the tree is at its largest.
+                tileScale=4,
             ).getInfo()
             or {}
         )
@@ -785,6 +912,7 @@ def compute_yield(req: YieldRequest) -> dict[str, Any]:
                 geometry=building_geom,
                 scale=4.0,
                 maxPixels=1e7,
+                tileScale=4,
             ).getInfo()
             or {}
         )
@@ -792,8 +920,12 @@ def compute_yield(req: YieldRequest) -> dict[str, Any]:
         baseline_roof_kwh = float(sum_raw.get("e_baseline") or 0.0)
         after_shadow_roof_kwh = float(sum_raw.get("e_shadow") or 0.0)
         after_svf_roof_kwh = float(sum_raw.get("e_svf") or 0.0)
-        after_uhi_roof_kwh = float(sum_raw.get("e_uhi") or 0.0)
-        after_soiling_roof_kwh = float(sum_raw.get("e_soiling") or 0.0)
+        # Derived, not reduced: these two stages are the sky-view stage scaled by
+        # the derates, which are plain positive scalars. See the note on sum_stack.
+        after_uhi_roof_kwh = after_svf_roof_kwh * float(uhi_info["uhi_derate_factor"])
+        after_soiling_roof_kwh = after_uhi_roof_kwh * float(
+            soiling_info["soiling_retention_factor"]
+        )
         roof_area_m2 = float(sum_raw.get("roof_area") or 0.0)
         mean_shadow_frequency = mean_raw.get("shadow_frequency")
         mean_sky_view_factor = mean_raw.get("sky_view_factor")
@@ -1064,9 +1196,13 @@ def compute_yield(req: YieldRequest) -> dict[str, Any]:
             ttl_s=get_settings().cache_ttl_result_s,
             coverage_complete=coverage.get("status") == "complete",
         )
-        return JSONResponse(content=out, headers=cached.headers)
+        return JSONResponse(
+            content=out, headers={**cached.headers, **deps.allowance_headers(request)}
+        )
     except (
         HTTPException,
+        AllowanceExceededError,
+        EarthEngineUnavailableError,
         BudgetExceededError,
         RateLimitExceededError,
         ConcurrencyTimeoutError,
@@ -1084,7 +1220,7 @@ def compute_yield(req: YieldRequest) -> dict[str, Any]:
 
 
 @app.post("/api/series")
-def compute_series(req: YieldRequest) -> dict[str, Any]:
+def compute_series(req: YieldRequest, request: Request) -> dict[str, Any]:
     """
     The whole generation curve in one request, instead of firing /api/yield once per
     point (that used to be 12-31 round-trips). GHI and beam come from a couple of
@@ -1199,6 +1335,8 @@ def compute_series(req: YieldRequest) -> dict[str, Any]:
         }
     except (
         HTTPException,
+        AllowanceExceededError,
+        EarthEngineUnavailableError,
         BudgetExceededError,
         RateLimitExceededError,
         ConcurrencyTimeoutError,
@@ -1211,22 +1349,51 @@ def compute_series(req: YieldRequest) -> dict[str, Any]:
         raise HTTPException(status_code=500, detail=str(e)) from e
 
 
-# Resolve the static directory relative to this file, not the process cwd --
-# a relative path here meant the server only worked when launched from the
-# repo root and 500'd otherwise. Guarded so that a checkout without a built
-# frontend can still import the app (tests, CI).
+# ---------------------------------------------------------------------------
+# The single-page app
+# ---------------------------------------------------------------------------
+
+# Resolved relative to this file, not the process cwd -- a relative path here
+# meant the server only worked when launched from the repo root and 500'd
+# otherwise. Guarded so a checkout with no built frontend can still import the
+# app, which is what lets the test suite run without an npm install.
 _STATIC_DIR = Path(__file__).resolve().parent / "static"
-if _STATIC_DIR.is_dir():
-    app.mount("/", StaticFiles(directory=str(_STATIC_DIR), html=True), name="static")
+_INDEX_HTML = _STATIC_DIR / "index.html"
 
 
-# Resolve the static directory relative to this file, not the process cwd --
-# a relative path here meant the server only worked when launched from the
-# repo root and 500'd otherwise. Guarded so that a checkout without a built
-# frontend can still import the app (tests, CI).
-_STATIC_DIR = Path(__file__).resolve().parent / "static"
+class _SpaStaticFiles(StaticFiles):
+    """
+    Static files, with a fallback to ``index.html`` for unknown paths.
+
+    The frontend is a single-page app with client-side routing, so a request for
+    ``/explore`` has no corresponding file: the browser needs the app shell,
+    which then renders that route. Plain ``StaticFiles`` returns 404 and the
+    deep link is broken -- which matters here because permalinks are a feature,
+    and a shared link that only works if you navigate to it from the home page
+    is not a permalink.
+
+    Only 404s are rewritten. A 403 or a genuine server error is passed through,
+    because turning those into a 200 with an HTML body would hide them.
+    """
+
+    async def get_response(self, path: str, scope):
+        from starlette.exceptions import HTTPException as StarletteHTTPException
+
+        try:
+            return await super().get_response(path, scope)
+        except StarletteHTTPException as exc:
+            if exc.status_code != 404 or not _INDEX_HTML.is_file():
+                raise
+            # An unknown *asset* should stay a 404 rather than being answered
+            # with HTML: a missing script returning index.html produces a
+            # baffling syntax error in the console instead of a clear 404.
+            if path.startswith("assets/") or "." in path.rsplit("/", 1)[-1]:
+                raise
+            return await super().get_response("index.html", scope)
+
+
 if _STATIC_DIR.is_dir():
-    app.mount("/", StaticFiles(directory=str(_STATIC_DIR), html=True), name="static")
+    app.mount("/", _SpaStaticFiles(directory=str(_STATIC_DIR), html=True), name="static")
 
 
 def main() -> None:

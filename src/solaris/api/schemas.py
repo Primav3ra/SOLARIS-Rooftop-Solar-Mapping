@@ -119,14 +119,24 @@ class YieldRequest(AoiMixin, RoofMixin, TemporalMixin):
     packing_factor: float = Field(default=0.7, gt=0.0, le=1.0)
     building_confidence: float = Field(default=0.7, ge=0.0, le=1.0)
 
+    # Manual panel cleaning interval, days. ``None`` means rain-only cleaning,
+    # which is the honest default for an unmaintained rooftop: assuming
+    # diligent weekly cleaning would inflate every estimate the project makes.
+    # Bounded at 365 because beyond a year soiling has long saturated and the
+    # parameter stops meaning anything.
+    cleaning_interval_days: int | None = Field(default=None, ge=1, le=365)
+
 
 class TilesRequest(AoiMixin, RoofMixin, TemporalMixin):
+    # combined_derate is deliberately absent: the heat-island and soiling
+    # derates are area-wide scalars, so that "layer" could only ever paint one
+    # flat colour over the whole box. /api/tiles rejects it with an explanation
+    # rather than drawing a map of a number that has no spatial variation.
     layer: Literal[
         "roof_mask",
         "shadow_frequency",
         "sky_view_factor",
         "net_irradiance",
-        "combined_derate",
         "temperature_delta",
     ] = "roof_mask"
 

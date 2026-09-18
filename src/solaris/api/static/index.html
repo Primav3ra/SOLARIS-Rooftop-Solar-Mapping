@@ -1,137 +1,20 @@
 <!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>PV Mapping - Urban India</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com" />
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css" />
-  <link rel="stylesheet" href="https://api.mapbox.com/mapbox-gl-js/v3.3.0/mapbox-gl.css" />
-  <link rel="stylesheet" href="/styles/dashboard.css?v=1" />
-</head>
-<body>
-  <div id="toast" role="status" aria-live="polite"></div>
-  <div id="introOverlay">
-    <div id="intro-root"></div>
-    <div class="introHud introHud-fallback">
-      <div class="introText">SOLARIS/GRID INITIALIZING...</div>
-      <button id="skipIntroFallback" type="button">Skip intro</button>
-    </div>
-  </div>
-
-  <main class="dashboard">
-    <header class="dash-topbar">
-      <div class="brand">
-        <div class="sun-dot"></div>
-        <div>
-          <h1>SOLARIS/GRID</h1>
-          <p>ROOFTOP PV POTENTIAL ANALYZER</p>
-        </div>
-      </div>
-      <div class="meta">
-        <span>link · stable</span>
-        <span id="clock"></span>
-      </div>
-    </header>
-
-    <section class="dash-grid">
-      <aside class="left-col">
-        <article class="panel panel-edge">
-          <h2>TEMPORAL RANGE</h2>
-          <div class="range-row">
-            <label>FROM</label>
-            <div class="two">
-              <select id="startMonth"></select>
-              <select id="startYear"></select>
-            </div>
-          </div>
-          <div class="range-row">
-            <label>TO</label>
-            <div class="two">
-              <select id="endMonth"></select>
-              <select id="endYear"></select>
-            </div>
-          </div>
-        </article>
-
-        <article class="panel panel-edge">
-          <h2>RESULT BOX</h2>
-          <div class="result-grid">
-            <div class="result-line"><span>BASELINE</span><b id="pvBaseline">-</b><span>kWh</span></div>
-            <div class="result-line"><span>AFTER SHADOW</span><b id="pvAfterShadow">-</b><span>kWh</span></div>
-            <div class="result-line"><span>AFTER SKY-VIEW</span><b id="pvAfterSvf">-</b><span>kWh</span></div>
-            <div class="result-line"><span>AFTER UHI</span><b id="pvAfterUhi">-</b><span>kWh</span></div>
-            <div class="result-line"><span>AFTER SOILING</span><b id="pvAfterSoiling">-</b><span>kWh</span></div>
-            <div class="result-line result-line-net"><span>NET</span><b id="pvNet">-</b><span>kWh</span></div>
-          </div>
-
-          <div class="chart-head" style="margin-top:10px">
-            <h2 style="margin:0 0 0 0">PENALTY CONTRIBUTION</h2>
-            <span id="penaltyLossTotal">-</span>
-          </div>
-          <div class="penalty-chart-wrap">
-            <canvas id="penaltyChart" height="170"></canvas>
-          </div>
-          <p class="muted" id="penaltyChartHint">Penalty contribution breakdown.</p>
-        </article>
-
-        <article class="panel panel-edge">
-          <h2>TARGET BUILDING</h2>
-          <p class="muted">Click rooftop to select building; AOI radius is derived from building size. Then run compute.</p>
-          <div class="aoi-stats">
-            <div><span>lat</span><b id="aoiLat">-</b></div>
-            <div><span>lon</span><b id="aoiLon">-</b></div>
-            <div><span>area</span><b id="aoiArea">-</b></div>
-          </div>
-          <button id="runComputeBtn" type="button" class="compute-btn">COMPUTE</button>
-          <p id="status" class="status"></p>
-        </article>
-      </aside>
-
-      <section class="middle-col panel panel-edge corner-frame">
-        <div id="map"></div>
-        <div class="map-hud">SURFACE · SCAN · 3D</div>
-        <div class="map-toggle">
-          <button id="btnStreet" class="active" type="button">Street</button>
-          <button id="btnSatellite" type="button">Satellite</button>
-          <button id="btnHybrid" type="button">Hybrid</button>
-          <button id="btnTemperature" type="button">Temperature</button>
-        </div>
-      </section>
-
-      <aside class="right-col">
-        <div class="kpi-grid">
-          <article class="panel panel-edge kpi"><p>TOTAL ENERGY</p><h3 id="totalEnergy">-</h3><span>kWh</span></article>
-          <article class="panel panel-edge kpi"><p>DAILY AVG</p><h3 id="dailyAvg">-</h3><span>kWh</span></article>
-          <article class="panel panel-edge kpi"><p>EST. CAPACITY</p><h3 id="peakPower">-</h3><span>kWp</span></article>
-          <article class="panel panel-edge kpi"><p>CO2 AVOIDED</p><h3 id="co2Avoided">-</h3><span>kg</span></article>
-        </div>
-        <article class="panel panel-edge roof-panel">
-          <div class="chart-head"><h2>ROOFTOP ANALYSIS</h2><span>shade fraction</span></div>
-          <div class="roof-stats">
-            <div class="roof-line"><span>ROOF AREA</span><b id="roofAreaM2">-</b><span>m2</span></div>
-            <div class="roof-line"><span>AREA IN SHADE</span><b id="roofShadeAreaM2">-</b><span>m2</span></div>
-            <div class="roof-line roof-line-pct"><span>SHADE %</span><b id="roofShadePct">-</b><span>%</span></div>
-          </div>
-        </article>
-        <article class="panel panel-edge shade-panel">
-          <div class="chart-head"><h2>SHADE MATRIX</h2><span>6 x UTC buckets</span></div>
-          <div id="shadeMatrix" class="shade-matrix"></div>
-        </article>
-        <article class="panel panel-edge chart-panel">
-          <div class="chart-head"><h2>GENERATION CURVE</h2><span id="seriesLabel">kWh/day</span></div>
-          <canvas id="generationChart" height="220"></canvas>
-        </article>
-      </aside>
-    </section>
-  </main>
-
-  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
-  <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
-  <script src="https://api.mapbox.com/mapbox-gl-js/v3.3.0/mapbox-gl.js"></script>
-  <script type="module" src="/intro-build/intro.bundle.js" defer></script>
-  <script type="module" src="/scripts/main.js"></script>
-</body>
+<html lang="en" data-theme="dark">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>SOLARIS — Rooftop solar potential for urban India</title>
+    <meta
+      name="description"
+      content="Rooftop solar potential for urban India, computed on demand from open satellite data. Shadow, sky-view, heat-island and soiling modelled per building."
+    />
+    <meta name="color-scheme" content="dark light" />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <script type="module" crossorigin src="/assets/index-DpDM3mwh.js"></script>
+    <link rel="modulepreload" crossorigin href="/assets/vendor-DWNcL2Uh.js">
+    <link rel="stylesheet" crossorigin href="/assets/index-CUEJfPNK.css">
+  </head>
+  <body>
+    <div id="root"></div>
+  </body>
 </html>

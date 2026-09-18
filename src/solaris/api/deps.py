@@ -107,6 +107,77 @@ def gee_project_id() -> str:
     return os.environ.get("GEE_PROJECT_ID", "pv-mapping-india")
 
 
+class EarthEngineUnavailableError(RuntimeError):
+    """
+    Earth Engine could not be initialised.
+
+    Distinct from a generic failure on purpose. A 500 tells the caller "our
+    bug"; this is almost always configuration -- missing credentials, a project
+    without the API enabled, a project that is not Earth Engine *registered*,
+    or a service account without ``serviceusage.services.use``. Reporting it as
+    an internal error sends someone hunting through application code for a
+    problem that is entirely in their Cloud project, which is exactly what
+    happened on the first deploy of this service.
+
+    Carries a curated hint rather than the raw exception text. The raw text
+    names the Cloud project, and this reply can reach an unauthenticated
+    caller.
+    """
+
+    def __init__(self, message: str, hint: str = ""):
+        super().__init__(message)
+        self.hint = hint
+
+
+#: Fragments of Earth Engine error text mapped to something actionable.
+#:
+#: Matching on message text is fragile, and the fallback below is the honest
+#: acknowledgement of that: an unrecognised message still produces a 503 with
+#: generic guidance rather than being mistaken for a healthy state.
+_EE_ERROR_HINTS = (
+    (
+        "does not have required permission",
+        "The credentials in use cannot access this Cloud project. Grant the "
+        "account roles/serviceusage.serviceUsageConsumer on it, and check that "
+        "GEE_PROJECT_ID names a project you actually have access to.",
+    ),
+    (
+        "not registered",
+        "The Cloud project is not registered with Earth Engine. Enabling the "
+        "API is not sufficient -- register it (noncommercial or commercial) at "
+        "https://code.earthengine.google.com/register.",
+    ),
+    (
+        "has not been used in project",
+        "The Earth Engine API is not enabled on this Cloud project. Enable it, "
+        "then allow a few minutes for the change to propagate.",
+    ),
+    (
+        "Please authorize",
+        "No usable credentials were found. Run `earthengine authenticate` for "
+        "local development, or attach a service account in production.",
+    ),
+    (
+        "credentials",
+        "No usable credentials were found. Run `earthengine authenticate` for "
+        "local development, or attach a service account in production.",
+    ),
+)
+
+
+def earth_engine_hint(exc: Exception) -> str:
+    """An actionable hint for an Earth Engine failure, or a generic fallback."""
+    text = str(exc)
+    for fragment, hint in _EE_ERROR_HINTS:
+        if fragment in text:
+            return hint
+    return (
+        "Earth Engine could not be initialised. Check that GEE_PROJECT_ID names "
+        "a project with the Earth Engine API enabled and registered, and that "
+        "the running identity has access to it. See docs/deployment.md."
+    )
+
+
 def _ensure_ee(project_id: str | None = None) -> None:
     """
     Spin EE up once per process so we're not paying for ee.Initialize on every
@@ -128,7 +199,17 @@ def _ensure_ee(project_id: str | None = None) -> None:
     with _EE_INIT_LOCK:
         if project_id == _EE_INIT_PROJECT:
             return
-        _initialize_ee(project_id)
+        try:
+            _initialize_ee(project_id)
+        except Exception as exc:
+            # Deliberately not memoised: a transient failure must not pin the
+            # process into a broken state for its lifetime, and a
+            # configuration fix should take effect on the next request rather
+            # than needing a restart.
+            raise EarthEngineUnavailableError(
+                "Earth Engine is not available on this server.",
+                hint=earth_engine_hint(exc),
+            ) from exc
         _EE_INIT_PROJECT = project_id
 
 
@@ -266,6 +347,68 @@ def ee_gate(n_calls: int = 1):
 
     record_ee_calls(n_calls)
     return get_gate().slot(n_calls=n_calls)
+
+
+def charge_computation(request: Any) -> None:
+    """
+    Spend one guest computation, or raise if the allowance is gone.
+
+    Called only **after** a cache lookup has missed. That ordering is the whole
+    design: a cached answer costs nothing to serve, so charging for it would
+    make repeat visits feel punitive and would spend an allowance on work that
+    never happened. It also makes the cache a user-facing feature rather than
+    an invisible optimisation.
+
+    """
+    from solaris.api.auth import get_guest_allowance
+
+    identity = getattr(getattr(request, "state", None), "identity", None)
+    if identity is None:
+        return
+
+    allowance = get_guest_allowance()
+    allowance.check(identity.allowance_key)
+    allowance.spend(identity.allowance_key)
+
+
+def allowance_headers(request: Any) -> dict[str, str]:
+    """
+    The remaining guest allowance, as response headers.
+
+    Headers rather than a body field, deliberately. The allowance is per
+    caller and changes with every computation, while the body is what gets
+    **cached** -- so putting the count in the payload would freeze one
+    caller's remaining count into every later reader's response. Headers are
+    assembled per response and sit outside the cached value.
+    """
+    state = allowance_state(request)
+    headers: dict[str, str] = {}
+    if "remaining" in state:
+        headers["X-Guest-Remaining"] = str(state["remaining"])
+        headers["X-Guest-Allowance"] = str(state["allowance"])
+    return headers
+
+
+def allowance_state(request: Any) -> dict[str, Any]:
+    """
+    What the caller has left, for the response envelope.
+
+    Returned on every computation so the frontend can show the remaining count
+    without a second round-trip, and so a guest is never surprised by the
+    refusal that arrives when the allowance runs out.
+    """
+    from solaris.api.auth import get_guest_allowance
+
+    identity = getattr(getattr(request, "state", None), "identity", None)
+    if identity is None:
+        return {"allowance": None}
+
+    allowance = get_guest_allowance()
+    return {
+        "allowance": allowance.allowance,
+        "used": allowance.used(identity.allowance_key),
+        "remaining": allowance.remaining(identity.allowance_key),
+    }
 
 
 # Public aliases. The underscore names remain the implementations; these are
