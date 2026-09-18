@@ -257,6 +257,118 @@ def missing_city_years(years: tuple[int, ...]) -> list[tuple[str, int]]:
 
 
 # ---------------------------------------------------------------------------
+# Daily precipitation, for the soiling model
+# ---------------------------------------------------------------------------
+
+#: Corrected total precipitation, mm/day. The one input the soiling model
+#: genuinely cannot do without: soiling in India is monsoon-modulated, and a
+#: model with no rain term applies the same annual loss to July as to October
+#: whatever the coefficient.
+NASA_POWER_PRECIP_PARAM = "PRECTOTCORR"
+
+#: Daily rainfall that cleans a module, mm.
+#:
+#: 1 mm is the threshold in Kimber et al. (2006) and is the value pvlib's
+#: ``soiling.kimber`` defaults to. Light drizzle below it can make soiling
+#: *worse* by cementing dust, which is why the threshold is not simply "any
+#: rain".
+RAIN_CLEAN_THRESHOLD_MM = 1.0
+
+
+@dataclass
+class PrecipSeries:
+    """Daily precipitation for one city-year, keyed ``YYYYMMDD``, mm/day."""
+
+    city: str
+    year: int
+    precip_mm: dict[str, float] = field(default_factory=dict)
+
+    @property
+    def n_valid(self) -> int:
+        return len(self.precip_mm)
+
+    @property
+    def annual_mm(self) -> float:
+        return sum(self.precip_mm.values())
+
+    def rain_days(self, threshold_mm: float = RAIN_CLEAN_THRESHOLD_MM) -> int:
+        """Days whose rainfall would clean a module."""
+        return sum(1 for v in self.precip_mm.values() if v >= threshold_mm)
+
+    def monthly_rain_days(self, threshold_mm: float = RAIN_CLEAN_THRESHOLD_MM) -> dict[int, int]:
+        out: dict[int, int] = {}
+        for day, value in self.precip_mm.items():
+            month = int(day[4:6])
+            out.setdefault(month, 0)
+            if value >= threshold_mm:
+                out[month] += 1
+        return out
+
+    def monthly_days(self) -> dict[int, int]:
+        """Days with a valid retrieval per month, so a rate can be normalised."""
+        out: dict[int, int] = {}
+        for day in self.precip_mm:
+            month = int(day[4:6])
+            out[month] = out.get(month, 0) + 1
+        return out
+
+    def window_rain_days(
+        self,
+        start_date: str,
+        end_date_exclusive: str,
+        threshold_mm: float = RAIN_CLEAN_THRESHOLD_MM,
+    ) -> tuple[int, int]:
+        """
+        ``(rain_days, total_days)`` inside ``[start, end)``.
+
+        Dates arrive as ``YYYY-MM-DD``; the keys here are ``YYYYMMDD``, and
+        string comparison on a zero-padded date is ordering-correct, so no
+        parsing is needed.
+        """
+        start = start_date.replace("-", "")
+        end = end_date_exclusive.replace("-", "")
+        rain = total = 0
+        for day, value in self.precip_mm.items():
+            if start <= day < end:
+                total += 1
+                if value >= threshold_mm:
+                    rain += 1
+        return rain, total
+
+
+def precip_cache_path(city: str, year: int) -> pathlib.Path:
+    return CACHE_DIR / "nasa_power_precip" / f"{city}_{year}.json"
+
+
+def load_cached_precip(city: str, year: int) -> PrecipSeries | None:
+    path = precip_cache_path(city, year)
+    if not path.exists():
+        return None
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    return PrecipSeries(city=city, year=year, precip_mm=payload["precip_mm"])
+
+
+def save_cached_precip(series: PrecipSeries, meta: dict) -> pathlib.Path:
+    path = precip_cache_path(series.city, series.year)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "city": series.city,
+                "year": series.year,
+                "precip_mm": series.precip_mm,
+                "_meta": meta,
+            },
+            indent=1,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    return path
+
+
+# ---------------------------------------------------------------------------
 # Hourly reference data, for the pvlib physics engine
 # ---------------------------------------------------------------------------
 

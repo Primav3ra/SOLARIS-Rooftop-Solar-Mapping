@@ -25,14 +25,18 @@ from solaris.evals.references import (
     NASA_POWER_HOURLY_PARAMS,
     NASA_POWER_HOURLY_URL,
     NASA_POWER_PARAMS,
+    NASA_POWER_PRECIP_PARAM,
     NASA_POWER_TIME_STANDARD,
     NASA_POWER_URL,
     DailySeries,
     HourlySeries,
+    PrecipSeries,
     load_cached,
     load_cached_hourly,
+    load_cached_precip,
     save_cached,
     save_cached_hourly,
+    save_cached_precip,
 )
 
 #: Be a good citizen of a free service.
@@ -89,6 +93,51 @@ def fetch_nasa_power(city_key: str, year: int) -> DailySeries:
             "fetched_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             "units": "kWh/m2/day",
             "n_valid_days": series.n_valid,
+        },
+    )
+    return series
+
+
+def fetch_nasa_power_precip(city_key: str, year: int) -> PrecipSeries:
+    """
+    Fetch one city-year of daily precipitation.
+
+    Same endpoint and same fill-value handling as the irradiance fetch, but a
+    separate cache file: the irradiance references were already committed, and
+    re-fetching twenty city-years to add one parameter would change files whose
+    contents are cited in the validation report.
+    """
+    city = CITY_BY_KEY[city_key]
+    query = urllib.parse.urlencode(
+        {
+            "parameters": NASA_POWER_PRECIP_PARAM,
+            "community": "RE",
+            "latitude": city.lat,
+            "longitude": city.lon,
+            "start": f"{year}0101",
+            "end": f"{year}1231",
+            "format": "JSON",
+        }
+    )
+    url = f"{NASA_POWER_URL}?{query}"
+    payload = _get_json(url)
+    raw = payload["properties"]["parameter"].get(NASA_POWER_PRECIP_PARAM, {})
+    # A dropped fill value is a missing day, not a dry day. Treating -999 as
+    # zero would invent a dry spell and make the soiling model predict a
+    # cleaning that never happened.
+    precip = {day: float(v) for day, v in raw.items() if float(v) != FILL_VALUE}
+
+    series = PrecipSeries(city=city_key, year=year, precip_mm=precip)
+    save_cached_precip(
+        series,
+        {
+            "source": "NASA POWER daily point API",
+            "url": url,
+            "fetched_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "units": "mm/day",
+            "n_valid_days": series.n_valid,
+            "annual_mm": round(series.annual_mm, 1),
+            "rain_days_ge_1mm": series.rain_days(),
         },
     )
     return series
@@ -171,32 +220,53 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="fetch the monthly-diurnal hourly climatology for the pvlib engine",
     )
+    parser.add_argument(
+        "--precip",
+        action="store_true",
+        help="fetch daily precipitation for the soiling model",
+    )
     args = parser.parse_args(argv)
+
+    if args.hourly and args.precip:
+        parser.error("--hourly and --precip write different caches; run them separately")
+
+    kind = "hourly" if args.hourly else "precip" if args.precip else "daily"
+    loaders = {
+        "daily": load_cached,
+        "hourly": load_cached_hourly,
+        "precip": load_cached_precip,
+    }
+    fetchers = {
+        "daily": fetch_nasa_power,
+        "hourly": fetch_nasa_power_hourly,
+        "precip": fetch_nasa_power_precip,
+    }
 
     keys = args.cities or [c.key for c in CITIES]
     fetched = skipped = failed = 0
 
     for key in keys:
         for year in args.years:
-            already = load_cached_hourly(key, year) if args.hourly else load_cached(key, year)
-            if not args.force and already is not None:
+            if not args.force and loaders[kind](key, year) is not None:
                 skipped += 1
                 continue
             try:
-                series = (
-                    fetch_nasa_power_hourly(key, year)
-                    if args.hourly
-                    else fetch_nasa_power(key, year)
-                )
+                series = fetchers[kind](key, year)
             except (urllib.error.URLError, KeyError, ValueError) as exc:
                 print(f"[fail] {key} {year}: {type(exc).__name__}: {exc}")
                 failed += 1
                 continue
-            if args.hourly:
+            if kind == "hourly":
                 print(
                     f"[ok]   {key:<11} {year}  {series.n_steps:>3} steps  "
                     f"annual GHI {series.annual_ghi_kwh_m2():>7.1f} kWh/m2  "
                     f"daytime air {series.mean_daytime_air_temp_c():>5.1f} C"
+                )
+            elif kind == "precip":
+                print(
+                    f"[ok]   {key:<11} {year}  {series.n_valid:>3} days  "
+                    f"{series.annual_mm:>7.1f} mm  "
+                    f"{series.rain_days():>3} cleaning-rain days"
                 )
             else:
                 print(

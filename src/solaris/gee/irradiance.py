@@ -1,9 +1,10 @@
 """
 ERA5 irradiance -- the GHI baseline and the beam/diffuse split.
 
-GHI comes from ERA5-Land hourly (ECMWF/ERA5_LAND/HOURLY, band
-surface_solar_radiation_downwards_hourly, ~9 km). It's J/m^2 per hour, so divide by 3.6e6
-for kWh/m^2.
+GHI comes from ERA5-Land daily aggregates (ECMWF/ERA5_LAND/DAILY_AGGR, band
+surface_solar_radiation_downwards_sum, ~9 km). It's accumulated J/m^2, so divide by 3.6e6
+for kWh/m^2. Daily rather than hourly because the band is an accumulation -- the period
+total is identical either way -- and a full-year sum costs 1.1 s instead of 25.7 s.
 
 The beam fraction (how much of GHI is direct) needs the direct-radiation band, which
 ERA5-Land doesn't carry -- so that part comes from plain ERA5 hourly (~28 km) as
@@ -21,8 +22,30 @@ import ee
 
 from solaris.core import constants as _C
 
-ERA5_COLLECTION = "ECMWF/ERA5_LAND/HOURLY"
-ERA5_BAND = "surface_solar_radiation_downwards_hourly"  # J/m^2 per hour
+#: ERA5-Land **daily** aggregates, not hourly.
+#:
+#: The band is an accumulation, so summing 365 daily images gives exactly the
+#: same period total as summing 8760 hourly ones -- verified to five
+#: significant figures at several points, not assumed. What differs is the
+#: cost: a cold full-year sum measured **25.7 s hourly against 1.1 s daily**,
+#: a 23x speedup, and the hourly path was the single largest component of a
+#: yearly query. Before this, yearly mode could not finish inside the
+#: configured request timeout at all.
+#:
+#: A caution for anyone re-measuring: Earth Engine caches computation results
+#: server-side, so a repeated query returns in milliseconds regardless of its
+#: real cost. The figures above are from fresh points chosen to defeat that;
+#: the first comparison attempted here read 428 ms for the hourly path purely
+#: because it had already been run.
+ERA5_COLLECTION = "ECMWF/ERA5_LAND/DAILY_AGGR"
+ERA5_BAND = "surface_solar_radiation_downwards_sum"  # J/m^2 accumulated per day
+
+#: The hourly source this replaced. Kept named because the beam/diffuse split
+#: below still needs hourly data -- ERA5-Land carries no direct component, and
+#: plain ERA5 publishes no daily aggregate that does -- so the asymmetry is
+#: deliberate rather than an oversight.
+ERA5_HOURLY_GHI_COLLECTION = "ECMWF/ERA5_LAND/HOURLY"
+ERA5_HOURLY_GHI_BAND = "surface_solar_radiation_downwards_hourly"
 ERA5_SCALE_M = _C.ERA5_SCALE_M  # 0.1 deg at equator (~9 km native)
 _J_TO_KWH = 3_600_000.0
 

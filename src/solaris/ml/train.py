@@ -22,7 +22,20 @@ REPORT_DIR = pathlib.Path(__file__).resolve().parents[3] / "ml" / "reports"
 DEFAULT_YEARS = (2020, 2021, 2022)
 
 
-def run(years: tuple[int, ...] = DEFAULT_YEARS) -> dict:
+def run(years: tuple[int, ...] = DEFAULT_YEARS, *, persist: bool = True) -> dict:
+    """
+    Fit and score the ladder, and optionally promote the winner.
+
+    ``persist=False`` evaluates without writing anything. That separation
+    matters more than it looks: the test suite calls this to assert the ladder
+    still behaves, and while it persisted, **every ``pytest`` run overwrote the
+    committed model artifact** with a new version and timestamp. Two
+    consequences, both bad. ``git status`` was never clean, so a real artifact
+    change was indistinguishable from test noise; and the shipped model became
+    whatever the last test run happened to produce rather than a reviewed,
+    deliberately promoted one -- which defeats the entire point of committing it
+    alongside a manifest.
+    """
     samples = features.build_dataset(years)
     if not samples:
         return {
@@ -44,7 +57,7 @@ def run(years: tuple[int, ...] = DEFAULT_YEARS) -> dict:
     # dependency that does not exist, and the registry already falls back to
     # them when no artifact is present.
     saved: dict | None = None
-    if winner in {"ridge", "gradient_boosting"}:
+    if persist and winner in {"ridge", "gradient_boosting"}:
         winning_score = next(s for s in scores if s.name == winner)
         manifest = registry.Manifest(
             name="decomposition",
@@ -84,6 +97,7 @@ def run(years: tuple[int, ...] = DEFAULT_YEARS) -> dict:
         "winner": winner,
         "reason": reason,
         "saved": saved,
+        "persisted": bool(saved),
         "observed": {
             "mean_diffuse_fraction": round(mean_observed, 4),
             "implied_mean_beam_fraction": round(1.0 - mean_observed, 4),
@@ -167,9 +181,14 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--years", type=int, nargs="+", default=list(DEFAULT_YEARS))
     parser.add_argument("--quiet", action="store_true")
+    parser.add_argument(
+        "--no-save",
+        action="store_true",
+        help="evaluate the ladder without promoting the winner to ml/artifacts/",
+    )
     args = parser.parse_args(argv)
 
-    report = run(tuple(args.years))
+    report = run(tuple(args.years), persist=not args.no_save)
     markdown = format_markdown(report)
 
     REPORT_DIR.mkdir(parents=True, exist_ok=True)

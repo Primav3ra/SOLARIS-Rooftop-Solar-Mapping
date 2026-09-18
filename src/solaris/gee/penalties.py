@@ -287,7 +287,31 @@ class ShadowPenalty:
         if occluded is None:  # pragma: no cover - SAMPLE_DISTANCES_M is non-empty
             occluded = ee.Image(0)
 
-        return occluded.rename("in_shadow").toUint8()
+        # Pin the mask to the height raster's own, and treat "no data up-sun" as
+        # "not shadowed".
+        #
+        # This is not cosmetic. Each translate() shifts the image footprint, so
+        # Or-ing forty sample distances intersects forty slightly different
+        # footprints and erodes the valid region; summing thirty-nine sun
+        # positions then intersects all of those. Over a small area of interest
+        # the survivors reach **zero**, and a fully-masked shadow layer makes
+        # net irradiance masked, which reduces to a sum of 0 -- so the endpoint
+        # reported 0 kWh with shadow accounting for 100% of the loss, and a
+        # blank mean shadow fraction. Measured on a 0.22 km half-size AOI over
+        # Delhi: 12,432 valid height pixels, 1,425 surviving one low-sun
+        # position, and 0 surviving the sum.
+        #
+        # The convention matches what ``neighbour.unmask(0.0)`` above already
+        # encodes: absent height data means no building, so nothing occludes.
+        # Applying it to the accumulated result as well makes every position
+        # share the height raster's mask, which is what lets the weighted sum
+        # keep it.
+        #
+        # Worth noting why the offline suite could not catch this: the numpy
+        # fake has no notion of a footprint distinct from a mask, so the
+        # erosion does not happen there. It needed a live integration test,
+        # which now exists.
+        return occluded.unmask(0).updateMask(building_height.mask()).rename("in_shadow").toUint8()
 
     @staticmethod
     def frequency(
@@ -648,6 +672,91 @@ class SoilingPenalty:
         )
 
     @classmethod
+    def stats_windowed(
+        cls,
+        aoi: ee.Geometry,
+        start_date: str,
+        end_date_exclusive: str,
+        *,
+        cleaning_interval_days: int | None = None,
+        scale_m: float = 1000.0,
+        sample_rain: bool = True,
+        point: ee.Geometry | None = None,
+    ) -> dict[str, Any]:
+        """
+        Soiling retention for the actual window, with rain washing.
+
+        Supersedes :meth:`stats`, which returns the same annual number for a
+        one-day window as for a year. This one derives a daily deposition rate
+        from AOD, samples ERA5-Land daily rainfall over the window, and
+        time-averages the resulting sawtooth -- so a monsoon week and a dry
+        Rajasthan quarter come out differently, which they are.
+
+        Costs one extra Earth Engine round-trip for the rainfall series. That
+        is deliberate: the alternative is a rain-day count, and the mean-spell
+        approximation it forces understates the loss by up to 12.6x. See
+        :mod:`solaris.physics.soiling`.
+
+        Falls back to the rain-day approximation, and then to the legacy
+        coefficient, always reporting which path answered.
+        """
+        from datetime import date
+
+        from solaris.gee.precipitation import sample_era5_daily_precip
+        from solaris.physics import soiling as soiling_model
+
+        year = int(start_date[:4])
+        aod_img = cls.aod_image(aoi, year)
+        mean_aod = _reduce_mean(aod_img, "AOD_550nm", aoi, scale_m)
+        aod_source = "reduceRegion"
+        if mean_aod is None:
+            mean_aod = 0.50
+            aod_source = "fallback_urban_midpoint"
+        mean_aod = float(mean_aod)
+
+        start = date.fromisoformat(start_date)
+        end = date.fromisoformat(end_date_exclusive)
+        window_days = max(1, (end - start).days)
+
+        daily_rain: list[float] | None = None
+        rain_source = "not_sampled"
+        if sample_rain:
+            sampled = sample_era5_daily_precip(
+                point if point is not None else aoi.centroid(1),
+                start_date,
+                end_date_exclusive,
+            )
+            rain_source = sampled["source"]
+            if sampled["precip_mm"]:
+                daily_rain = sampled["precip_mm"]
+
+        result = soiling_model.window_soiling(
+            mean_aod,
+            window_days=window_days,
+            daily_rain_mm=daily_rain,
+            rain_days=None,
+            cleaning_interval_days=cleaning_interval_days,
+        )
+
+        out = result.as_dict()
+        out.update(
+            {
+                "mean_aod_550nm": round(mean_aod, 4),
+                "source": aod_source,
+                "rainfall_source": rain_source,
+                "maiac_collection": cls.MAIAC_COLLECTION,
+                "accounting_year": year,
+                "scale_m": scale_m,
+                "model": "kimber_aod_calibrated",
+                "calibration": soiling_model.calibration_note(),
+                "legacy_retention_for_comparison": round(
+                    soiling_model.legacy_retention(mean_aod), 5
+                ),
+            }
+        )
+        return out
+
+    @classmethod
     def stats(
         cls,
         aoi: ee.Geometry,
@@ -659,6 +768,13 @@ class SoilingPenalty:
         Soiling retention from MAIAC AOD. Year comes from start_date; scale_m near MAIAC's
         1 km. Returns the mean AOD, the loss fraction (mean_AOD * coefficient, uncapped),
         the retention factor (1 - loss), the coefficient, and a source tag.
+
+        **Superseded by :meth:`stats_windowed`.** Kept as the control arm for
+        the ablation table and so the previously published figures remain
+        reproducible. Its defining limitation is structural rather than a
+        matter of coefficient: it has no rainfall term and no window
+        dependence, so it returns the same annual loss for a monsoon day as for
+        a dry pre-monsoon quarter.
         """
         year = int(start_date[:4])
         aod_img = cls.aod_image(aoi, year)
