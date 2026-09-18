@@ -1,8 +1,8 @@
 <h1 align="center">SOLARIS</h1>
 <p align="center">
-   https://solaris-6z7g4xx6iq-el.a.run.app
-  Rooftop solar potential for urban India, computed on demand from open satellite data.<br>
-  Google Earth Engine · FastAPI · pvlib · React + MapLibre GL
+   https://solaris-6z7g4xx6iq-el.a.run.app<br>
+   Rooftop solar potential for urban India, computed on demand from open satellite data.<br>
+   Google Earth Engine · FastAPI · pvlib · React + MapLibre GL
 </p>
 <p align="center">
   <img alt="Python 3.11+" src="https://img.shields.io/badge/python-3.11%2B-3776AB?logo=python&logoColor=white">
