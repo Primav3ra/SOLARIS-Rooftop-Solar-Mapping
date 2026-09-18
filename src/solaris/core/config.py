@@ -22,14 +22,47 @@ the size of a continent.
 from __future__ import annotations
 
 import functools
-from typing import Literal
+import pathlib
+from typing import Annotated, Literal
 
 from pydantic import Field, SecretStr, field_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 Environment = Literal["local", "ci", "prod"]
 AuthMode = Literal["auto", "adc", "sa_json", "sa_file", "local"]
 CacheBackend = Literal["memory", "firestore", "none"]
+
+
+def _find_env_file() -> tuple[str, ...]:
+    """
+    Locate ``.env`` relative to the installed package, not the process cwd.
+
+    A bare ``env_file=".env"`` resolves against the working directory, so
+    ``solaris-api`` picked up a ``.env`` only when launched from the repo root
+    and **silently ignored it everywhere else** -- falling back to the default
+    Earth Engine project and producing a permission error that named a project
+    the user had never chosen. Exactly the failure mode the relative
+    ``StaticFiles`` path used to have, and equally invisible: nothing warns you
+    that your configuration was not read.
+
+    Walks up from this module looking for a directory that holds both a
+    ``.env`` and a ``pyproject.toml``, so it finds the *project's* file and not
+    some unrelated ``.env`` further up the filesystem. The cwd-relative path is
+    kept last, so an explicit local file still wins in a deployment that
+    arranges one.
+    """
+    candidates: list[str] = []
+    for parent in pathlib.Path(__file__).resolve().parents:
+        if (parent / "pyproject.toml").is_file():
+            candidates.append(str(parent / ".env"))
+            break
+    candidates.append(".env")
+    return tuple(candidates)
+
+
+#: Resolved once at import. A tuple, because pydantic-settings accepts several
+#: and applies them in order.
+ENV_FILES = _find_env_file()
 
 
 class Settings(BaseSettings):
@@ -42,7 +75,7 @@ class Settings(BaseSettings):
 
     model_config = SettingsConfigDict(
         env_prefix="SOLARIS_",
-        env_file=".env",
+        env_file=ENV_FILES,
         env_file_encoding="utf-8",
         extra="ignore",
         frozen=True,
@@ -77,7 +110,21 @@ class Settings(BaseSettings):
     #: Allowed CORS origins. The dashboard is served same-origin from this same
     #: app, so this only matters for local development and any separately
     #: hosted frontend.
-    cors_origins: list[str] = Field(
+    #:
+    #: ``NoDecode`` is load-bearing, not decoration.
+    #:
+    #: pydantic-settings treats a ``list`` field as complex and tries to
+    #: **JSON-decode** the environment value *before* any validator runs. So
+    #: the comma-separated form documented in ``.env.example`` and in the
+    #: deployment runbook -- ``SOLARIS_CORS_ORIGINS=https://a,https://b`` --
+    #: raised ``SettingsError`` at startup, and the ``mode="before"`` validator
+    #: below never got a chance to split it. The failure was invisible locally
+    #: because the default is used when the variable is unset, so it would have
+    #: surfaced for the first time on the production deploy that set it.
+    #:
+    #: ``NoDecode`` suppresses that JSON attempt and hands the raw string to the
+    #: validator, which is what makes the documented syntax actually work.
+    cors_origins: Annotated[list[str], NoDecode] = Field(
         default_factory=lambda: ["http://localhost:8000", "http://127.0.0.1:8000"]
     )
 
@@ -110,7 +157,15 @@ class Settings(BaseSettings):
     #: Computations a guest may run before being asked to sign in. Cached
     #: results do not count, which makes the cache a UX feature as well as a
     #: cost control.
-    guest_computation_allowance: int = Field(default=3, ge=0)
+    #:
+    #: Ten rather than three. Comparing sites is the primary task -- a single
+    #: rooftop figure is close to meaningless without another to compare it
+    #: against -- and an allowance of three refused the fourth site, which put
+    #: the limit below the smallest useful session. Ten covers a realistic
+    #: comparison of five or six roofs with room for re-runs at different
+    #: windows, while still bounding a single visitor's cost. The global daily
+    #: call budget remains the actual spend guard.
+    guest_computation_allowance: int = Field(default=10, ge=0)
 
     # -- cache ------------------------------------------------------------
 
@@ -139,9 +194,27 @@ class Settings(BaseSettings):
     @field_validator("cors_origins", mode="before")
     @classmethod
     def _split_origins(cls, value):
-        """Accept a comma-separated string, which is how env vars arrive."""
+        """
+        Accept a comma-separated string, which is how env vars arrive.
+
+        A JSON array is also accepted, since that is what pydantic-settings
+        would have expected and someone following its conventions rather than
+        ours should not be punished for it.
+        """
         if isinstance(value, str):
-            return [origin.strip() for origin in value.split(",") if origin.strip()]
+            text = value.strip()
+            if text.startswith("["):
+                import json
+
+                try:
+                    return json.loads(text)
+                except json.JSONDecodeError as exc:
+                    raise ValueError(
+                        "cors_origins looked like JSON but did not parse. Use a "
+                        "comma-separated list instead, e.g. "
+                        "SOLARIS_CORS_ORIGINS=https://a.example,https://b.example"
+                    ) from exc
+            return [origin.strip() for origin in text.split(",") if origin.strip()]
         return value
 
     @field_validator("cors_origins")
@@ -190,6 +263,13 @@ class Settings(BaseSettings):
         return {
             "env": self.env,
             "git_sha": self.git_sha,
+            # Which .env was actually read, if any. The most common local
+            # confusion is configuration that was never loaded, and this makes
+            # that visible instead of leaving it to be inferred from a
+            # surprising project id.
+            "env_file_loaded": next(
+                (path for path in ENV_FILES if pathlib.Path(path).is_file()), None
+            ),
             "gee_project_id": self.gee_project_id,
             "gee_auth_mode": self.gee_auth_mode,
             "gee_credentials_configured": bool(self.gee_sa_json or self.gee_sa_key_file),

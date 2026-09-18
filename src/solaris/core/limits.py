@@ -247,9 +247,23 @@ def get_gate() -> EarthEngineGate:
                 from solaris.core.config import get_settings
 
                 settings = get_settings()
+                budget: object = EarthEngineBudget(limit=settings.daily_ee_call_budget)
+                if settings.cache_backend == "firestore":
+                    # The same Firestore dependency that backs the persistent
+                    # cache also makes this counter global rather than
+                    # per-instance. It wraps the local budget rather than
+                    # replacing it, so an unreachable counter degrades to a
+                    # per-instance ceiling instead of to none.
+                    from solaris.core.firestore_cache import FirestoreBudget
+
+                    budget = FirestoreBudget(
+                        local=budget,
+                        collection=settings.firestore_collection,
+                        project=settings.gee_project_id,
+                    )
                 _GATE = EarthEngineGate(
                     max_concurrent=settings.max_concurrent_ee_calls,
-                    budget=EarthEngineBudget(limit=settings.daily_ee_call_budget),
+                    budget=budget,  # type: ignore[arg-type]
                 )
     return _GATE
 

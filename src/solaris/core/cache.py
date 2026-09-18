@@ -243,10 +243,22 @@ def get_cache() -> CacheBackend:
                 settings = get_settings()
                 if settings.cache_backend == "memory":
                     _BACKEND = MemoryCache(max_entries=settings.cache_max_entries)
+                elif settings.cache_backend == "firestore":
+                    # Tiered, not Firestore alone. Memory in front means a
+                    # repeated request on a warm instance costs no network hop,
+                    # while the persistent tier is what survives scale-to-zero
+                    # -- and under scale-to-zero most requests hit a cold
+                    # instance, so memory alone would miss almost always.
+                    from solaris.core.firestore_cache import FirestoreCache, TieredCache
+
+                    _BACKEND = TieredCache(
+                        fast=MemoryCache(max_entries=settings.cache_max_entries),
+                        slow=FirestoreCache(
+                            collection=settings.firestore_collection,
+                            project=settings.gee_project_id,
+                        ),
+                    )
                 else:
-                    # Firestore is the intended persistent tier; until it is
-                    # wired, an unknown backend degrades to no caching rather
-                    # than failing a request.
                     _BACKEND = NullCache()
     return _BACKEND
 
