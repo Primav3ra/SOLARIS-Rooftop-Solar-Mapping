@@ -8,18 +8,28 @@ name: Deploy to Cloud Run
 #   1. The WIF provider MUST carry an attribute condition pinning
 #      assertion.repository to this repo. Without it the pool is usable by any
 #      GitHub repository, which is the most common misconfiguration.
-#   2. The runtime service account's email must be registered as an Earth
-#      Engine user. Miss that and every request 403s with nothing in the code
-#      to explain why.
+#   2. The Cloud project must be registered with Earth Engine -- enabling the
+#      API is not sufficient -- and the runtime service account must hold IAM
+#      roles on it. Miss either and every request 403s with nothing in the code
+#      to explain why; /api/ready reports which.
 
 on:
-  push:
-    branches: [main]
+  # Manual only, deliberately.
+  #
+  # This previously ran on every push to main with no dependency on CI, so a
+  # commit with failing tests would deploy. It also failed on every push until
+  # the one-time Google Cloud setup existed, which trains everyone to ignore a
+  # red check.
+  #
+  # Manual dispatch keeps the deploy an explicit act and lets the job verify
+  # its own configuration before touching anything. Add a `workflow_run`
+  # trigger gated on CI once the project deploys regularly.
   workflow_dispatch:
     inputs:
       confirm:
         description: "Type 'deploy' to confirm"
         required: true
+        default: ""
 
 permissions:
   id-token: write
@@ -36,10 +46,32 @@ env:
 
 jobs:
   deploy:
-    if: github.event_name == 'push' || inputs.confirm == 'deploy'
+    if: inputs.confirm == 'deploy'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      - name: Check required repository variables
+        run: |
+          missing=""
+          for v in WIF_PROVIDER DEPLOY_SERVICE_ACCOUNT GCP_PROJECT \
+                   RUNTIME_SERVICE_ACCOUNT GEE_PROJECT_ID; do
+            eval "value=\${$v}"
+            [ -n "$value" ] || missing="$missing $v"
+          done
+          if [ -n "$missing" ]; then
+            echo "::error::Unset repository variables:$missing"
+            echo "Set them under Settings > Secrets and variables > Actions > Variables."
+            echo "See docs/deployment.md for the exact values."
+            exit 1
+          fi
+          echo "all required variables are set"
+        env:
+          WIF_PROVIDER: ${{ vars.WIF_PROVIDER }}
+          DEPLOY_SERVICE_ACCOUNT: ${{ vars.DEPLOY_SERVICE_ACCOUNT }}
+          GCP_PROJECT: ${{ vars.GCP_PROJECT }}
+          RUNTIME_SERVICE_ACCOUNT: ${{ vars.RUNTIME_SERVICE_ACCOUNT }}
+          GEE_PROJECT_ID: ${{ vars.GEE_PROJECT_ID }}
 
       - id: auth
         uses: google-github-actions/auth@v2
@@ -78,7 +110,7 @@ jobs:
             --region "$REGION" \
             --platform managed \
             --allow-unauthenticated \
-            --service-account "${{ vars.GEE_SERVICE_ACCOUNT }}" \
+            --service-account "${{ vars.RUNTIME_SERVICE_ACCOUNT }}" \
             --min-instances 0 \
             --max-instances 2 \
             --concurrency 8 \
@@ -86,11 +118,22 @@ jobs:
             --memory 1Gi \
             --timeout 120 \
             --cpu-boost \
-            --set-env-vars "SOLARIS_ENV=prod,SOLARIS_GIT_SHA=${{ github.sha }},GEE_PROJECT_ID=${{ vars.GEE_PROJECT_ID }},SOLARIS_GEE_AUTH_MODE=adc,SOLARIS_CORS_ORIGINS=${{ vars.PUBLIC_URL }},SOLARIS_CACHE_BACKEND=memory,SOLARIS_LOG_FORMAT=json"
+            --set-env-vars "SOLARIS_ENV=prod,SOLARIS_GIT_SHA=${{ github.sha }},GEE_PROJECT_ID=${{ vars.GEE_PROJECT_ID }},SOLARIS_GEE_AUTH_MODE=adc,SOLARIS_CACHE_BACKEND=firestore,SOLARIS_LOG_FORMAT=json"
           # min-instances stays 0 for near-zero idle cost; --cpu-boost absorbs
           # the ee.Initialize() round-trip on a cold start. max-instances 2 is
           # also a hard ceiling on damage, and it makes the in-process rate
           # limiter effectively global.
+
+      - name: Set the allowed origin to the service's own URL
+        run: |
+          # Cloud Run assigns the URL, so it cannot be a prerequisite of the
+          # first deploy. PUBLIC_URL overrides it for a custom domain.
+          URL=$(gcloud run services describe "$SERVICE" --region "$REGION" --format='value(status.url)')
+          ORIGIN="${{ vars.PUBLIC_URL }}"
+          [ -n "$ORIGIN" ] || ORIGIN="$URL"
+          gcloud run services update "$SERVICE" --region "$REGION" \
+            --update-env-vars "SOLARIS_CORS_ORIGINS=$ORIGIN" --quiet
+          echo "allowed origin: $ORIGIN"
 
       - name: Smoke test
         id: smoke
@@ -105,7 +148,13 @@ jobs:
           READY=$(curl -fsS "$URL/api/ready")
           echo "$READY"
           echo "$READY" | grep -q '"ready":true' || {
-            echo "::error::Earth Engine session failed. Check that ${{ vars.GEE_SERVICE_ACCOUNT }} is registered as an Earth Engine user."
+            echo "::error::Earth Engine session failed."
+            echo "Check, in order:"
+            echo "  1. ${{ vars.GEE_PROJECT_ID }} is registered with Earth Engine"
+            echo "     (enabling the API is not sufficient)."
+            echo "  2. ${{ vars.RUNTIME_SERVICE_ACCOUNT }} holds roles/earthengine.writer"
+            echo "     and roles/serviceusage.serviceUsageConsumer on that project."
+            echo "  3. /api/ready reports a hint naming the specific cause."
             exit 1
           }
           curl -fsS "$URL/api/presets" > /dev/null

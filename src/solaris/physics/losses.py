@@ -201,7 +201,7 @@ class LossBreakdown:
         """Every loss combined, including the geometric layers."""
         return self.balance_of_system * self.computed_retention
 
-    def as_dict(self) -> dict[str, float | None | list[str]]:
+    def as_dict(self) -> dict[str, float | list[str] | None]:
         """Flat, JSON-serialisable form for the API response and eval records."""
         return {
             "assumed": {

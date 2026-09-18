@@ -28,7 +28,7 @@ import logging
 import sys
 import time
 import uuid
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
@@ -301,7 +301,7 @@ def _error_response(
     message: str,
     request_id: str,
     headers: dict[str, str] | None = None,
-    extra: dict[str, object] | None = None,
+    extra: Mapping[str, object] | None = None,
 ) -> JSONResponse:
     """
     One error shape for every failure mode.

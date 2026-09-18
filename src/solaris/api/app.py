@@ -25,7 +25,7 @@ from typing import Any
 import ee
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from solaris.api import deps, middleware
@@ -729,7 +729,7 @@ def buildings(req: BuildingsRequest) -> dict[str, Any]:
 
 
 @app.post("/api/yield")
-def compute_yield(req: YieldRequest, request: Request) -> dict[str, Any]:
+def compute_yield(req: YieldRequest, request: Request) -> Response:
     """
     Single-building PV energy for the same temporal window as /api/baseline.
 
@@ -893,7 +893,7 @@ def compute_yield(req: YieldRequest, request: Request) -> dict[str, Any]:
                 reducer=ee.Reducer.sum(),
                 geometry=building_geom,
                 scale=4.0,
-                maxPixels=1e7,
+                maxPixels=int(1e7),
                 # Splits the region into smaller tiles, trading round-trip time for
                 # peak memory. The canonical remedy for the limit above, and cheap
                 # insurance for a dense AOI where the tree is at its largest.
@@ -911,7 +911,7 @@ def compute_yield(req: YieldRequest, request: Request) -> dict[str, Any]:
                 reducer=ee.Reducer.mean(),
                 geometry=building_geom,
                 scale=4.0,
-                maxPixels=1e7,
+                maxPixels=int(1e7),
                 tileScale=4,
             ).getInfo()
             or {}
@@ -1003,7 +1003,7 @@ def compute_yield(req: YieldRequest, request: Request) -> dict[str, Any]:
                     reducer=ee.Reducer.mean(),
                     geometry=building_geom,
                     scale=4.0,
-                    maxPixels=1e7,
+                    maxPixels=int(1e7),
                 ).getInfo()
                 or {}
             )
@@ -1013,8 +1013,10 @@ def compute_yield(req: YieldRequest, request: Request) -> dict[str, Any]:
 
         shade_intervals = []
         for label, _h0, _h1 in bucket_specs:
-            band = bucket_band.get(label)
-            raw_bucket = shade_raw.get(band) if band else None
+            # Named distinctly from the `band` built in the loop above: reusing
+            # that name made this an Optional assignment to a str.
+            bucket_band_name = bucket_band.get(label)
+            raw_bucket = shade_raw.get(bucket_band_name) if bucket_band_name is not None else None
             shade_fraction = float(raw_bucket) if raw_bucket is not None else 0.0
             shade_area_m2 = float(roof_area_m2) * float(shade_fraction)
             shade_intervals.append(
@@ -1090,7 +1092,7 @@ def compute_yield(req: YieldRequest, request: Request) -> dict[str, Any]:
             for interval in shade_intervals
             if interval["shade_fraction"] == 0.0 and interval["label"] not in bucket_band
         ]
-        quality.record_empty_shade_buckets(empty_buckets)
+        quality.record_empty_shade_buckets([str(label) for label in empty_buckets])
         try:
             quality.set_coverage(
                 window_coverage(s, e, latest=_cached_latest_available_date()).as_dict()
@@ -1284,7 +1286,7 @@ def compute_series(req: YieldRequest, request: Request) -> dict[str, Any]:
             (
                 svf_img.multiply(area_img)
                 .rename("svf_area")
-                .reduceRegion(ee.Reducer.sum(), building_geom, 4.0, maxPixels=1e7)
+                .reduceRegion(ee.Reducer.sum(), building_geom, 4.0, maxPixels=int(1e7))
                 .getInfo()
                 or {}
             ).get("svf_area")
@@ -1303,7 +1305,7 @@ def compute_series(req: YieldRequest, request: Request) -> dict[str, Any]:
                     reducer=ee.Reducer.sum(),
                     geometry=building_geom,
                     scale=4.0,
-                    maxPixels=1e7,
+                    maxPixels=int(1e7),
                 ).getInfo()
                 or {}
             )

@@ -25,6 +25,18 @@ dependencies = [
   "fastapi>=0.115,<1",
   "google-auth>=2.30,<3",   # imported directly on the ADC path
   "pydantic>=2.8,<3",       # imported directly; was only transitive before
+  # 2.3 is the floor for NoDecode, which core/config.py needs so a
+  # comma-separated SOLARIS_CORS_ORIGINS is not JSON-decoded before its
+  # validator runs. Undeclared until now: it happened to be installed locally,
+  # so every clean install -- including CI -- failed on import.
+  "pydantic-settings>=2.3,<3",
+  # Both imported directly by src/solaris, so both are declared rather than
+  # relied on transitively. cachetools was previously supplied by google-auth,
+  # which dropped it -- so a clean install lost the in-process cache backend
+  # and /api/yield answered 500 on its first cache lookup. starlette arrives
+  # with fastapi, but api/app.py and api/middleware.py import it by name.
+  "cachetools>=5.3,<7",
+  "starlette>=0.37,<1",
   "uvicorn[standard]>=0.30,<1",
 ]
 
@@ -65,8 +77,15 @@ dev = [
   "pytest-mock>=3.14,<4",
   "hypothesis>=6.100,<7",
   "httpx>=0.27,<1",
-  "ruff>=0.6",
-  "mypy>=1.11",
+  # Upper bounds on the linters, deliberately. An open bound means CI installs
+  # whatever released this morning, so a new rule turns the build red on code
+  # nobody touched -- which happened: local 0.12 against 0.16 on a clean
+  # install produced three failures. Raise these on purpose, not by surprise.
+  # A tight bound, because ruff-format's output is version-sensitive: 0.12 and
+  # 0.16 disagree on lambda wrapping, so a loose pin makes `ruff format --check`
+  # fail in CI on code the developer just formatted.
+  "ruff>=0.16,<0.17",
+  "mypy>=1.11,<2",
   "pip-audit>=2.7",
   "pre-commit>=3.8",
 ]
@@ -106,7 +125,16 @@ ban-relative-imports = "all"
 "tests/**" = ["E402"]   # sys.path-free test scripts still print-and-assert
 
 [tool.mypy]
-python_version = "3.11"
+# 3.12, although the project supports 3.11 from `requires-python`.
+#
+# numpy ships stubs written in PEP 695 syntax, which mypy cannot parse while
+# targeting 3.11 -- and the error aborts the entire run, so anyone with the
+# physics extra installed could not type-check at all.
+#
+# The 3.11 guarantee does not rest on this setting. It is enforced by
+# tests/unit/test_packaging.py, which parses every source file against the
+# 3.11 grammar, and by the CI test matrix, which executes the suite on 3.11.
+python_version = "3.12"
 # Typed at the boundaries only. Every `ee.*` object is effectively Any, so
 # strict mode over solaris/gee would generate many `type: ignore`s and find
 # nothing. solaris.core / solaris.api are where types pay.
@@ -117,8 +145,29 @@ no_implicit_optional = true
 disallow_untyped_defs = false
 
 [[tool.mypy.overrides]]
-module = ["ee.*", "google.auth.*"]
+# Third-party packages that ship no type information. Listing them explicitly
+# rather than setting ignore_missing_imports globally: a global setting would
+# also silence a genuine typo in one of our own module paths.
+#   ee.*            -- earthengine-api ships no stubs; every ee object is Any
+#   google.auth.*   -- used on the ADC path
+#   google.cloud.*  -- the Firestore client, imported lazily
+#   cachetools.*    -- the in-process TTL cache
+module = ["ee.*", "google.auth.*", "google.cloud.*", "cachetools.*"]
 ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+# numpy ships stubs written against Python 3.12 syntax (PEP 695 `type`
+# statements), which mypy cannot parse while targeting 3.11 -- and 3.11 is the
+# floor this project supports, so lowering the target is not optional. The
+# error aborts the whole run, not just the numpy file.
+#
+# Skipping the import means numpy-typed values are Any here. That costs little:
+# no module under solaris/core or solaris/api uses numpy directly.
+module = ["numpy", "numpy.*", "pandas", "pandas.*", "pvlib", "pvlib.*"]
+ignore_missing_imports = true
+follow_imports = "skip"
+# Values from these are Any under solaris/core and solaris/api, which costs
+# nothing: no module there uses them directly.
 
 [tool.pytest.ini_options]
 # "." puts the repo root on sys.path so tests can import the shared fakes

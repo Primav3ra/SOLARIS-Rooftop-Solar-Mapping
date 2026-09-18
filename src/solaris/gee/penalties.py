@@ -46,6 +46,7 @@ Research basis:
 from __future__ import annotations
 
 import math
+from collections.abc import Sequence
 from typing import Any
 
 import ee
@@ -316,7 +317,7 @@ class ShadowPenalty:
     @staticmethod
     def frequency(
         building_height: ee.Image,
-        solar_positions: list[tuple] | None = None,
+        solar_positions: Sequence[tuple] | None = None,
         pixel_size_m: float = 4.0,
     ) -> ee.Image:
         """

@@ -8,7 +8,7 @@
   <img alt="FastAPI" src="https://img.shields.io/badge/api-FastAPI-009688?logo=fastapi&logoColor=white">
   <img alt="MapLibre GL" src="https://img.shields.io/badge/map-MapLibre%20GL-295DAA?logo=maplibre&logoColor=white">
   <img alt="Earth Engine" src="https://img.shields.io/badge/geo-Earth%20Engine-34A853?logo=googleearth&logoColor=white">
-  <img alt="tests" src="https://img.shields.io/badge/tests-648%20passing-brightgreen">
+  <img alt="tests" src="https://img.shields.io/badge/tests-656%20passing-brightgreen">
   <img alt="license" src="https://img.shields.io/badge/license-MIT-green">
 </p>
 
@@ -261,7 +261,7 @@ Dropped, with the measurement and the condition that would reverse it committed 
 
 ## Testing
 
-**648 tests, offline, no credentials, no network.** That is possible because of
+**656 tests, offline, no credentials, no network.** That is possible because of
 `tests/fakes/fake_ee.py`: a numpy-backed fake Earth Engine where `FakeImage` is a lazy
 expression tree and every operation is real arithmetic on real arrays.
 

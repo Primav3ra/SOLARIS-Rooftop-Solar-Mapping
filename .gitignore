@@ -52,12 +52,19 @@ models/**/*.pkl
 models/**/*.txt.model
 models/**/data/
 
-# Eval outputs are CI artifacts, except the latest report -- that is the
-# project's evidence artifact and the README links to it, so it is committed.
+# Eval outputs are CI artifacts, except the reports that are the project's
+# evidence. Those are committed, and the frontend imports them at build time so
+# the Validation and Models pages cannot drift from them -- which means an
+# ignored report is a broken build, not a missing file. Add any new committed
+# report here and to frontend/site/src/data/reports.js together.
 /reports/
 evals/reports/*
 !evals/reports/latest.md
 !evals/reports/latest.json
+!evals/reports/soiling.md
+!evals/reports/soiling.json
+!evals/reports/track_b_profile.md
+!evals/reports/track_b_profile.json
 
 # OS / editor
 .DS_Store

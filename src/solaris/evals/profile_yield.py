@@ -51,7 +51,18 @@ def count_round_trips() -> dict:
     Counting rather than timing, and offline rather than live, because the
     count is what the decision turns on and the count is credential-free.
     """
-    import pytest
+    # pytest and the test fakes, because the offline count is taken against the
+    # numpy fake. That makes this a development tool rather than part of the
+    # served package: it needs the `dev` extra installed, and says so rather
+    # than failing with a bare ImportError.
+    try:
+        import pytest
+    except ImportError as exc:  # pragma: no cover - depends on the install extra
+        raise RuntimeError(
+            "solaris.evals.profile_yield counts round-trips against the test "
+            "fake, so it needs the dev extra: pip install -e '.[dev]'"
+        ) from exc
+
     from tests.fakes import world
     from tests.fakes.install import install_fake_ee
 
@@ -269,21 +280,27 @@ def _live_profile() -> dict:
 
     timed(
         "shadow_frequency_reduce",
-        lambda: ShadowPenalty.frequency(height, solar_positions=positions)
-        .reduceRegion(reducer=ee.Reducer.mean(), geometry=aoi, scale=4, maxPixels=1e9)
-        .getInfo(),
+        lambda: (
+            ShadowPenalty.frequency(height, solar_positions=positions)
+            .reduceRegion(reducer=ee.Reducer.mean(), geometry=aoi, scale=4, maxPixels=1e9)
+            .getInfo()
+        ),
     )
     timed(
         "sky_view_factor_reduce",
-        lambda: SkyViewFactor.image(height)
-        .reduceRegion(reducer=ee.Reducer.mean(), geometry=aoi, scale=4, maxPixels=1e9)
-        .getInfo(),
+        lambda: (
+            SkyViewFactor.image(height)
+            .reduceRegion(reducer=ee.Reducer.mean(), geometry=aoi, scale=4, maxPixels=1e9)
+            .getInfo()
+        ),
     )
     timed(
         "roof_area_reduce",
-        lambda: roof.multiply(ee.Image.pixelArea())
-        .reduceRegion(reducer=ee.Reducer.sum(), geometry=aoi, scale=4, maxPixels=1e9)
-        .getInfo(),
+        lambda: (
+            roof.multiply(ee.Image.pixelArea())
+            .reduceRegion(reducer=ee.Reducer.sum(), geometry=aoi, scale=4, maxPixels=1e9)
+            .getInfo()
+        ),
     )
 
     overhead = stages.get("baseline_trivial_getinfo", 0.0)

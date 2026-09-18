@@ -1,0 +1,262 @@
+{
+  "calibration": {
+    "anchored_on": {
+      "assumed_annual_mean_aod": 0.7,
+      "measured_rate_per_day": 0.0034,
+      "site": "Delhi (winter, rooftop measurement)"
+    },
+    "default_cleaning_interval_days": 30,
+    "deposition_per_day_per_aod": 0.004857,
+    "deviations_from_pvlib_defaults": {
+      "cleaning_threshold_mm": "1.0 vs pvlib 6.0",
+      "grace_period_days": "0 vs pvlib 14",
+      "soiling_loss_rate": "derived from AOD vs pvlib fixed 0.0015"
+    },
+    "grace_period_days": 0,
+    "max_soiling_loss": 0.3,
+    "rain_clean_threshold_mm": 1.0,
+    "weakest_link": "The deposition coefficient is one measured Delhi rate divided by one assumed Delhi annual-mean AOD. The rate is measured; the AOD is a literature value, not a retrieval from this pipeline."
+  },
+  "generated_utc": "2026-09-17T18:47:33Z",
+  "mean_spell_understatement": {
+    "max_x": 12.64,
+    "min_x": 1.77,
+    "recorded_range": [
+      1.8,
+      12.6
+    ]
+  },
+  "model": "kimber_aod_calibrated",
+  "per_city": [
+    {
+      "aod": 0.7,
+      "city": "delhi",
+      "cleaning_rain_days": 91,
+      "daily_rate": 0.0034,
+      "longest_dry_spell_days": 62,
+      "loss_legacy_model": 0.056,
+      "loss_mean_spell_approximation": 0.00857,
+      "loss_rain_only": 0.0389,
+      "loss_with_30d_cleaning": 0.02063,
+      "mean_dry_spell_days": 8.84,
+      "mean_spell_understatement_x": 4.54,
+      "pvlib_kimber_loss": 0.0389,
+      "rate_clamped": false,
+      "zone": "composite, very high aerosol"
+    },
+    {
+      "aod": 0.55,
+      "city": "jaipur",
+      "cleaning_rain_days": 96,
+      "daily_rate": 0.002671,
+      "longest_dry_spell_days": 65,
+      "loss_legacy_model": 0.044,
+      "loss_mean_spell_approximation": 0.0071,
+      "loss_rain_only": 0.03021,
+      "loss_with_30d_cleaning": 0.01577,
+      "mean_dry_spell_days": 8.68,
+      "mean_spell_understatement_x": 4.26,
+      "pvlib_kimber_loss": 0.03021,
+      "rate_clamped": false,
+      "zone": "semi-arid, high aerosol"
+    },
+    {
+      "aod": 0.48,
+      "city": "jodhpur",
+      "cleaning_rain_days": 66,
+      "daily_rate": 0.002331,
+      "longest_dry_spell_days": 125,
+      "loss_legacy_model": 0.0384,
+      "loss_mean_spell_approximation": 0.00642,
+      "loss_rain_only": 0.06147,
+      "loss_with_30d_cleaning": 0.01913,
+      "mean_dry_spell_days": 11.96,
+      "mean_spell_understatement_x": 9.58,
+      "pvlib_kimber_loss": 0.06147,
+      "rate_clamped": false,
+      "zone": "arid, dusty"
+    },
+    {
+      "aod": 0.52,
+      "city": "ahmedabad",
+      "cleaning_rain_days": 82,
+      "daily_rate": 0.002526,
+      "longest_dry_spell_days": 135,
+      "loss_legacy_model": 0.0416,
+      "loss_mean_spell_approximation": 0.00574,
+      "loss_rain_only": 0.07261,
+      "loss_with_30d_cleaning": 0.0196,
+      "mean_dry_spell_days": 13.48,
+      "mean_spell_understatement_x": 12.64,
+      "pvlib_kimber_loss": 0.07265,
+      "rate_clamped": false,
+      "zone": "semi-arid"
+    },
+    {
+      "aod": 0.48,
+      "city": "mumbai",
+      "cleaning_rain_days": 157,
+      "daily_rate": 0.002331,
+      "longest_dry_spell_days": 39,
+      "loss_legacy_model": 0.0384,
+      "loss_mean_spell_approximation": 0.00303,
+      "loss_rain_only": 0.01628,
+      "loss_with_30d_cleaning": 0.00953,
+      "mean_dry_spell_days": 11.56,
+      "mean_spell_understatement_x": 5.38,
+      "pvlib_kimber_loss": 0.01628,
+      "rate_clamped": false,
+      "zone": "coastal, humid"
+    },
+    {
+      "aod": 0.38,
+      "city": "bengaluru",
+      "cleaning_rain_days": 151,
+      "daily_rate": 0.001846,
+      "longest_dry_spell_days": 49,
+      "loss_legacy_model": 0.0304,
+      "loss_mean_spell_approximation": 0.00231,
+      "loss_rain_only": 0.01309,
+      "loss_with_30d_cleaning": 0.00684,
+      "mean_dry_spell_days": 5.78,
+      "mean_spell_understatement_x": 5.68,
+      "pvlib_kimber_loss": 0.01309,
+      "rate_clamped": false,
+      "zone": "plateau, moderate"
+    },
+    {
+      "aod": 0.42,
+      "city": "chennai",
+      "cleaning_rain_days": 179,
+      "daily_rate": 0.00204,
+      "longest_dry_spell_days": 51,
+      "loss_legacy_model": 0.0336,
+      "loss_mean_spell_approximation": 0.00302,
+      "loss_rain_only": 0.01329,
+      "loss_with_30d_cleaning": 0.00663,
+      "mean_dry_spell_days": 5.81,
+      "mean_spell_understatement_x": 4.4,
+      "pvlib_kimber_loss": 0.01329,
+      "rate_clamped": false,
+      "zone": "coastal tropical"
+    },
+    {
+      "aod": 0.62,
+      "city": "kolkata",
+      "cleaning_rain_days": 175,
+      "daily_rate": 0.003011,
+      "longest_dry_spell_days": 69,
+      "loss_legacy_model": 0.0496,
+      "loss_mean_spell_approximation": 0.00436,
+      "loss_rain_only": 0.02785,
+      "loss_with_30d_cleaning": 0.013,
+      "mean_dry_spell_days": 8.64,
+      "mean_spell_understatement_x": 6.39,
+      "pvlib_kimber_loss": 0.02785,
+      "rate_clamped": false,
+      "zone": "humid subtropical"
+    },
+    {
+      "aod": 0.55,
+      "city": "guwahati",
+      "cleaning_rain_days": 181,
+      "daily_rate": 0.002671,
+      "longest_dry_spell_days": 46,
+      "loss_legacy_model": 0.044,
+      "loss_mean_spell_approximation": 0.004,
+      "loss_rain_only": 0.0172,
+      "loss_with_30d_cleaning": 0.01079,
+      "mean_dry_spell_days": 6.34,
+      "mean_spell_understatement_x": 4.3,
+      "pvlib_kimber_loss": 0.0172,
+      "rate_clamped": false,
+      "zone": "high cloud, north-east"
+    },
+    {
+      "aod": 0.12,
+      "city": "leh",
+      "cleaning_rain_days": 101,
+      "daily_rate": 0.000583,
+      "longest_dry_spell_days": 35,
+      "loss_legacy_model": 0.0096,
+      "loss_mean_spell_approximation": 0.00163,
+      "loss_rain_only": 0.00288,
+      "loss_with_30d_cleaning": 0.00232,
+      "mean_dry_spell_days": 5.74,
+      "mean_spell_understatement_x": 1.77,
+      "pvlib_kimber_loss": 0.00288,
+      "rate_clamped": false,
+      "zone": "high altitude, low aerosol"
+    }
+  ],
+  "pvlib": {
+    "available": true,
+    "note": "Compared with the first-day convention aligned; see solaris.physics.soiling.kimber_reference for why that matters and how large the unaligned difference is.",
+    "tolerance": 0.005,
+    "worst_absolute_disagreement": 3e-05
+  },
+  "schema_version": 1,
+  "seasonal": [
+    {
+      "assumed_aod": 0.8,
+      "is_the_calibration_anchor": false,
+      "measured_rate_per_day": 0.0039,
+      "predicted_rate_per_day": 0.00389,
+      "relative_error": -0.0037,
+      "season": "spring"
+    },
+    {
+      "assumed_aod": 0.72,
+      "is_the_calibration_anchor": true,
+      "measured_rate_per_day": 0.0034,
+      "predicted_rate_per_day": 0.0035,
+      "relative_error": 0.0286,
+      "season": "winter"
+    },
+    {
+      "assumed_aod": 0.5,
+      "is_the_calibration_anchor": false,
+      "measured_rate_per_day": 0.0024,
+      "predicted_rate_per_day": 0.00243,
+      "relative_error": 0.0119,
+      "season": "monsoon"
+    }
+  ],
+  "seasonal_ordering_correct": true,
+  "window_spread_x": 21.9,
+  "windows_delhi": [
+    {
+      "cleaning_rain_days": 4,
+      "days": 31,
+      "loss": 0.03586,
+      "loss_legacy_model": 0.056,
+      "mean_dry_spell_days": 9.0,
+      "window": "January (dry winter)"
+    },
+    {
+      "cleaning_rain_days": 1,
+      "days": 30,
+      "loss": 0.0289,
+      "loss_legacy_model": 0.056,
+      "mean_dry_spell_days": 14.5,
+      "window": "April (pre-monsoon dust)"
+    },
+    {
+      "cleaning_rain_days": 21,
+      "days": 31,
+      "loss": 0.00241,
+      "loss_legacy_model": 0.056,
+      "mean_dry_spell_days": 2.5,
+      "window": "July (monsoon)"
+    },
+    {
+      "cleaning_rain_days": 0,
+      "days": 30,
+      "loss": 0.0527,
+      "loss_legacy_model": 0.056,
+      "mean_dry_spell_days": 30.0,
+      "window": "November (post-monsoon, dry)"
+    }
+  ],
+  "year": 2021
+}

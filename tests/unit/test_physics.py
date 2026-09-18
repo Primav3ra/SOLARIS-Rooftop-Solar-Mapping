@@ -143,7 +143,7 @@ class TestComponentClosure:
     def test_negative_cos_zenith_is_clipped(self):
         """Below the horizon the beam contributes nothing, not a negative."""
         cosz = np.array([-0.3])
-        dni_out, dhi_out, _ = pv.close_components(
+        dni_out, _dhi_out, _ = pv.close_components(
             np.array([50.0]), np.array([500.0]), np.array([50.0]), cosz
         )
         assert dni_out[0] >= 0.0

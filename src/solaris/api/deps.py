@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import os
 import threading
+from collections.abc import Sequence
 from datetime import date
 from typing import Any
 
@@ -34,7 +35,7 @@ _EE_INIT_LOCK = threading.Lock()
 
 def _centroid_lon_lat(centroid: ee.Geometry) -> tuple[float, float]:
     g = centroid.getInfo()
-    coords = g.get("coordinates")
+    coords = (g or {}).get("coordinates")
     if not coords or len(coords) < 2:
         raise RuntimeError("Could not read centroid coordinates")
     return float(coords[0]), float(coords[1])
@@ -44,7 +45,7 @@ def _solar_positions_for_window(
     lat_deg: float,
     lon_deg: float,
     win: dict[str, Any],
-) -> list[tuple[float, float, float]]:
+) -> Sequence[tuple[float, ...]]:
     mode = win["mode"]
     if mode == "yearly":
         y = int(win["calendar_year"])
@@ -89,10 +90,6 @@ def _aoi_from_req(req: Any) -> tuple[list[list[float]], ee.Geometry]:
     else:
         coords = req.coordinates
     return coords, ee.Geometry.Polygon(coords)
-
-
-_EE_INIT_PROJECT: str | None = None
-_EE_INIT_LOCK = threading.Lock()
 
 
 def gee_project_id() -> str:
@@ -222,8 +219,11 @@ def _initialize_ee(project_id: str) -> None:
         email = sa_email or json.loads(sa_json).get("client_email")
         ee.Initialize(ee.ServiceAccountCredentials(email, key_data=sa_json), project=project_id)
     elif sa_key_file:
+        # The email is optional when it comes from the key file, but the stub
+        # types it as required.
         ee.Initialize(
-            ee.ServiceAccountCredentials(sa_email, key_file=sa_key_file), project=project_id
+            ee.ServiceAccountCredentials(sa_email or "", key_file=sa_key_file),
+            project=project_id,
         )
     else:
         # Application Default Credentials first: this covers Cloud Run's attached
@@ -251,7 +251,7 @@ def _build_roof_layers(
     roof_year: int | None,
     presence_threshold: float,
     min_height_m: float,
-) -> tuple[ee.Image, ee.Image, ee.Image]:
+) -> tuple[ee.Image, ...]:
     """
     Thin adapter over solaris.gee.layers.build_roof_layers, kept so the existing
     call sites keep their tuple-unpacking shape.

@@ -10,11 +10,13 @@ and for the India-region data.
 These are the two failure modes that are invisible in the code, so they are
 first rather than buried in the middle.
 
-**1. The runtime service account must itself be registered as an Earth Engine
-user.** Enabling the Earth Engine API on the project is not enough. Miss this
-and every request returns 403 with nothing in the codebase to explain why.
-Register at <https://code.earthengine.google.com/register> while signed in as,
-or having granted access to, the service account's project.
+**1. The Cloud project must be registered with Earth Engine, and the runtime
+service account must hold IAM roles on it.** Enabling the API is not enough.
+Register the project at <https://code.earthengine.google.com/register>; the
+registration covers principals that have access to it, so the service account
+then needs `roles/earthengine.writer` and
+`roles/serviceusage.serviceUsageConsumer`. Miss either and every request
+returns 403. `/api/ready` reports which of the two is missing.
 
 **2. The Workload Identity Federation provider must carry an attribute
 condition pinning the repository.** Without it, *any* GitHub repository can
@@ -98,21 +100,41 @@ gcloud firestore fields ttls update expires_at \
 
 Then set these as GitHub Actions **variables** (not secrets — none is sensitive):
 
-| Variable | Value |
-|---|---|
-| `WIF_PROVIDER` | `projects/$PROJECT_NUMBER/locations/global/workloadIdentityPools/github/providers/github` |
-| `DEPLOY_SERVICE_ACCOUNT` | `solaris-ci@$PROJECT_ID.iam.gserviceaccount.com` |
-| `RUNTIME_SERVICE_ACCOUNT` | `solaris-runtime@$PROJECT_ID.iam.gserviceaccount.com` |
-| `GCP_PROJECT_ID` | your project id |
+| Variable | Value | Required |
+|---|---|:-:|
+| `WIF_PROVIDER` | `projects/$PROJECT_NUMBER/locations/global/workloadIdentityPools/github/providers/github` | yes |
+| `DEPLOY_SERVICE_ACCOUNT` | `solaris-ci@$PROJECT_ID.iam.gserviceaccount.com` | yes |
+| `RUNTIME_SERVICE_ACCOUNT` | `solaris-runtime@$PROJECT_ID.iam.gserviceaccount.com` | yes |
+| `GCP_PROJECT` | your project id, for the image path | yes |
+| `GEE_PROJECT_ID` | your project id, for `ee.Initialize` | yes |
+| `PUBLIC_URL` | a custom domain, e.g. `https://solaris.example` | no |
+
+`GCP_PROJECT` and `GEE_PROJECT_ID` are ordinarily the same value. They are
+separate variables because the image registry path and the Earth Engine project
+are independent choices, and a deployment could legitimately push images to one
+project while billing Earth Engine to another.
+
+`PUBLIC_URL` is optional: Cloud Run assigns the service URL, so it cannot be a
+prerequisite of the first deploy. The workflow reads the URL back and sets
+`SOLARIS_CORS_ORIGINS` from it, and `PUBLIC_URL` overrides that for a custom
+domain.
+
+The deploy job verifies every required variable is set before it authenticates,
+so a missing one fails in seconds with the name rather than surfacing as an
+opaque push error.
 
 **No service-account JSON key is created at any point.** If you find yourself
 downloading one, something has gone wrong with the WIF setup — fix that instead.
 
 ## Deploying
 
-Pushing to `main` triggers `.github/workflows/deploy.yml`, which runs only after
-CI passes. It builds the image, deploys, smoke-tests `/api/health` and
-`/api/ready`, and rolls back on failure.
+Deployment is **manual**: run the *Deploy to Cloud Run* workflow from the
+Actions tab and type `deploy` to confirm. It builds the image, deploys,
+smoke-tests `/api/health` and `/api/ready`, and rolls back to the previous
+revision on failure.
+
+It does not run on push. An earlier version did, with no dependency on CI, so a
+commit with failing tests would have deployed.
 
 Manually:
 
@@ -171,6 +193,25 @@ Cheapest first, because they defend against different things.
    HTTP requests. That is the difference that matters: a per-IP request limit
    does nothing about one client making expensive calls. Backed by a Firestore
    `Increment` so it is genuinely global across instances.
+
+### The unit mismatch that matters
+
+`SOLARIS_DAILY_EE_CALL_BUDGET` counts **round-trips**. Earth Engine bills
+**EECU-seconds**. These are unrelated: one `/api/yield` over a yearly window is
+12 round-trips but roughly 100 s of wall clock and substantial server-side
+compute, while 12 round-trips over a single day is a small fraction of that.
+
+So the in-app budget protects against a flood of requests. It does **not**
+protect against a small number of expensive ones, and a budget of 5000 calls
+can exhaust a monthly EECU allowance while reporting ample headroom.
+
+**Set a daily EECU cap in the Earth Engine console** — Configuration → *Manage
+quota limits*. That is the only guard denominated in the unit that actually
+binds. Start low and raise it once real usage is visible on the same page.
+
+Note also that the non-commercial **Community tier** carries no SLA and lower
+concurrency limits than the commercial tiers. That is appropriate for a
+portfolio deployment, but it is not a platform to point sustained traffic at.
 
 If the shared counter is unreachable the local in-process budget still applies —
 degrading from a global ceiling to a per-instance one, bounded at 2× by

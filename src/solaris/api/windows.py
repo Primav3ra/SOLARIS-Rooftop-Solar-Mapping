@@ -191,7 +191,14 @@ def _series_layout(
     chunk lands in -- that mapping is 1:1 except in monthly mode, where days collapse
     into weeks.
     """
-    year = win.get("calendar_year")
+    # Narrowed once here rather than at each use. Every mode below indexes or
+    # does arithmetic on the year, and resolve_temporal_window always sets it --
+    # so a missing value is a programming error in the caller, not a runtime
+    # condition to tolerate silently.
+    raw_year = win.get("calendar_year")
+    if raw_year is None:
+        raise ValueError("window is missing calendar_year; resolve it before building a series")
+    year = int(raw_year)
 
     if mode == "yearly":
         items = []
