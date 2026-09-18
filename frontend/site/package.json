@@ -1,0 +1,27 @@
+{
+  "name": "solaris-site",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "budget": "node scripts/check-bundle-budget.mjs"
+  },
+  "dependencies": {
+    "@react-three/drei": "^10.7.7",
+    "@react-three/fiber": "^9.6.1",
+    "chart.js": "^4.4.7",
+    "maplibre-gl": "^4.7.1",
+    "react": "~19.2.5",
+    "react-chartjs-2": "^5.2.0",
+    "react-dom": "~19.2.5",
+    "react-router-dom": "^7.1.1",
+    "three": "^0.169.0"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^4.3.4",
+    "vite": "^5.4.11"
+  }
+}
