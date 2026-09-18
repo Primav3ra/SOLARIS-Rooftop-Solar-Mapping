@@ -301,10 +301,22 @@ class TestTrainedLadderAgainstCachedData:
     def report(self):
         from solaris.ml.train import run
 
-        result = run()
+        # persist=False, deliberately. This fixture used to promote its winner
+        # to ml/artifacts/, so every test run rewrote a committed file with a
+        # fresh version and timestamp -- leaving `git status` permanently dirty
+        # and making the shipped model whatever the last test run produced.
+        result = run(persist=False)
         if "skipped" in result:
             pytest.skip(result["skipped"])
         return result
+
+    def test_evaluating_does_not_promote_a_model(self, report):
+        """
+        The guard for the above. An evaluation must leave the artifact alone,
+        and the report must say so rather than leaving it ambiguous.
+        """
+        assert report["persisted"] is False
+        assert report["saved"] is None
 
     def test_dataset_is_non_trivial(self, report):
         assert report["n_samples"] > 500

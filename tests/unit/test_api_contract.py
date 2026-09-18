@@ -239,12 +239,26 @@ class TestParameterBounds:
             "shadow_frequency",
             "sky_view_factor",
             "net_irradiance",
-            "combined_derate",
             "temperature_delta",
         ],
     )
     def test_every_documented_tile_layer_validates(self, layer):
         assert TilesRequest(**{**self.BASE, "layer": layer}).layer == layer
+
+    def test_a_scalar_is_not_offered_as_a_map_layer(self):
+        """
+        ``combined_derate`` is rejected at validation.
+
+        The heat-island and soiling derates are area-wide scalars, so that
+        layer could only ever paint one flat colour across the whole box -- it
+        rendered as an opaque rectangle, implying a per-pixel result the model
+        does not produce. The spatially varying part of the same physics is
+        ``temperature_delta``.
+        """
+        import pydantic
+
+        with pytest.raises(pydantic.ValidationError):
+            TilesRequest(**{**self.BASE, "layer": "combined_derate"})
 
 
 class TestTemporalValidationIsACallerError:

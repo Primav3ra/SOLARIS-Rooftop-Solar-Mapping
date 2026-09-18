@@ -358,3 +358,128 @@ class TestEarthEngineSemantics:
             ).getInfo()["building_height"]
 
         assert mean_at(4.0) == pytest.approx(mean_at(40.0), rel=0.02)
+
+
+@pytest.mark.gee
+class TestShadowSurvivesSmallAreas:
+    """
+    The shadow layer must stay valid over a *small* area of interest.
+
+    This is the test the offline suite structurally cannot provide. Real Earth
+    Engine distinguishes an image's mask from its **footprint**, and every
+    ``translate`` shifts the footprint; ``Or``-ing forty sample distances and
+    then summing thirty-nine sun positions intersects all of those shifted
+    footprints. Over a small AOI the survivors reached zero, so net irradiance
+    was masked, the sum came out as 0, and ``/api/yield`` reported **0 kWh with
+    shadow responsible for 100% of the loss**.
+
+    The numpy fake has no footprint concept, so it evaluated the same
+    expression happily. Only a live reduction shows it.
+    """
+
+    # Deliberately small: the bug scaled with how little area was left after
+    # erosion, so a generous AOI hides it.
+    HALF_SIZES_DEG = (0.002, 0.004, 0.01)
+
+    @staticmethod
+    def _layers(half_size):
+        import ee
+
+        from solaris.api.windows import square_aoi_from_point
+        from solaris.gee.layers import build_roof_layers
+
+        aoi = ee.Geometry.Polygon([square_aoi_from_point(28.6153, 77.2059, half_size)])
+        _, height, roof = build_roof_layers(aoi, 2022, 0.7, 2.0)
+        return aoi, height, roof
+
+    @pytest.mark.parametrize("half_size", HALF_SIZES_DEG)
+    def test_shadow_frequency_has_valid_pixels(self, ee_session, half_size):
+        import ee
+
+        from solaris.gee.penalties import ShadowPenalty
+        from solaris.gee.solar_geometry import solar_positions_monthly
+
+        aoi, height, _ = self._layers(half_size)
+        positions = solar_positions_monthly(28.6153, 77.2059, 2023, 6)
+        shadow = ShadowPenalty.frequency(height, solar_positions=positions)
+
+        stats = (
+            shadow.addBands(height.rename("h"))
+            .reduceRegion(
+                reducer=ee.Reducer.count(),
+                geometry=aoi,
+                scale=4,
+                maxPixels=1e9,
+                tileScale=4,
+            )
+            .getInfo()
+        )
+        height_pixels = stats.get("h") or 0
+        shadow_pixels = stats.get("shadow_frequency") or 0
+
+        assert height_pixels > 0, "no building height data here; pick another AOI"
+        # The mask must match the height raster's, not some eroded subset.
+        assert shadow_pixels == pytest.approx(height_pixels, rel=0.02), (
+            f"shadow_frequency has {shadow_pixels} valid pixels against "
+            f"{height_pixels} for the height raster it derives from. Footprint "
+            f"erosion through repeated translate() is back."
+        )
+
+    def test_shadow_frequency_is_a_sane_fraction(self, ee_session):
+        import ee
+
+        from solaris.gee.penalties import ShadowPenalty
+        from solaris.gee.solar_geometry import solar_positions_monthly
+
+        aoi, height, _ = self._layers(0.002)
+        positions = solar_positions_monthly(28.6153, 77.2059, 2023, 6)
+        mean = (
+            ShadowPenalty.frequency(height, solar_positions=positions)
+            .reduceRegion(
+                reducer=ee.Reducer.mean(),
+                geometry=aoi,
+                scale=4,
+                maxPixels=1e9,
+                tileScale=4,
+            )
+            .getInfo()
+            .get("shadow_frequency")
+        )
+        assert mean is not None, "fully masked: the erosion bug has returned"
+        assert 0.0 <= mean <= 1.0
+        # June in Delhi is near-overhead sun, so rooftop shadowing is small but
+        # not nil. A value pinned at exactly 0 or 1 means something is wrong.
+        assert 0.0 < mean < 0.4, mean
+
+    def test_yield_over_a_small_aoi_is_not_zero(self, ee_session):
+        """
+        The end-to-end symptom, asserted directly: a roof with area must
+        produce energy.
+        """
+        from fastapi.testclient import TestClient
+
+        from solaris.api.app import app
+
+        client = TestClient(app)
+        response = client.post(
+            "/api/yield",
+            json={
+                "lat": 28.6153,
+                "lon": 77.2059,
+                "half_size_deg": 0.002,
+                "baseline_mode": "monthly",
+                "year": 2023,
+                "month": 6,
+            },
+        )
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert body["roof_area_m2"] > 0
+        assert body["period_yield_kwh"] > 0, (
+            "zero energy from a roof with area -- the shadow layer is masked again"
+        )
+        assert body["mean_shadow_fraction"] is not None
+        contribution = body["penalty_contribution"]
+        assert contribution["shadow_contribution_pct"] < 99.0, (
+            "shadow accounting for everything is the signature of a masked layer"
+        )

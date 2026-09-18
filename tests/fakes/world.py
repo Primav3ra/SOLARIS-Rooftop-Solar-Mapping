@@ -48,6 +48,13 @@ def city_presence() -> np.ndarray:
 # Fixed per-dataset values. Chosen to be plausible for Delhi.
 # ---------------------------------------------------------------------------
 
+#: Daily GHI accumulation, J/m^2, chosen so a full non-leap year sums to the
+#: same annual total the hourly fixture produced. Sub-year windows now scale
+#: with their length, which the previous constant-collection fixture did not do
+#: -- it returned the annual total for a one-month window, so nothing tested
+#: that a shorter window yields less energy.
+ERA5_LAND_J_PER_DAY = 1900.0 / 365.0 * 3_600_000.0
+
 #: ERA5-Land GHI, J/m^2 per hour. 8760 hourly images would be slow, so the
 #: collection returns N images whose sum reproduces a realistic annual total.
 ERA5_LAND_IMAGES = 12
@@ -68,6 +75,40 @@ AOD_VALUE = 0.70
 #: SRTM elevation: flat, so the slope exclusion keeps the whole grid.
 ELEVATION_M = 216.0
 
+#: ERA5-Land daily precipitation, in **metres** as the real band is.
+#:
+#: Shaped rather than constant, because the soiling model is driven by dry-spell
+#: length and a constant series has no spells at all.
+#:
+#: The pattern is the **measured** Delhi 2021 monthly rain-day count from NASA
+#: POWER, not an invented one. That matters: the first version of this fixture
+#: was a stylised two-month monsoon giving 20 cleaning-rain days a year, against
+#: Delhi's real 91. The synthetic year was therefore arid enough to saturate the
+#: soiling model at its 30% ceiling, which made soiling 89% of all modelled loss
+#: and broke the penalty-balance assertions -- not because the assertions were
+#: wrong, but because the world was.
+#:
+#: Days per month on which it rains, keyed by month. Real total: 91.
+PRECIP_RAIN_DAYS_BY_MONTH = {
+    1: 4,
+    2: 1,
+    3: 1,
+    4: 1,
+    5: 8,
+    6: 11,
+    7: 21,
+    8: 17,
+    9: 20,
+    10: 6,
+    11: 0,
+    12: 1,
+}
+
+#: Rainfall on a wet day, mm. Well clear of the 1 mm cleaning threshold, so the
+#: test is about spell structure rather than about threshold arithmetic.
+PRECIP_WET_DAY_MM = 8.0
+PRECIP_DRY_DAY_MM = 0.0
+
 #: The Open Buildings v3 footprint returned for a clicked point.
 BUILDING_AREA_M2 = 240.0
 BUILDING_CONFIDENCE = 0.86
@@ -84,6 +125,67 @@ def _constant_collection(bands: dict[str, float], n_images: int):
         ]
 
     return builder
+
+
+def _daily_precip_builder(start=None, end=None):
+    """
+    Daily precipitation images covering the requested window, in metres.
+
+    This **honours the dates**, unlike the constant collections in this world.
+    It has to: the soiling model divides accumulated loss by the length of the
+    series, so a builder that returned a whole year for a one-day window would
+    make every sub-year window look catastrophically soiled. That is exactly
+    what happened first time round -- a single November day came back at a 50%
+    loss -- and it found a real defect in the production code, which was taking
+    its denominator from the request rather than from the data.
+    """
+    import calendar
+    import datetime as _dt
+
+    first = _dt.date(2023, 1, 1) if not start else _dt.date.fromisoformat(str(start)[:10])
+    last = _dt.date(2024, 1, 1) if not end else _dt.date.fromisoformat(str(end)[:10])
+
+    images = []
+    for month in range(1, 13):
+        days_in_month = calendar.monthrange(2023, month)[1]
+        rain_days = PRECIP_RAIN_DAYS_BY_MONTH.get(month, 0)
+        # Spread the month's rain days evenly. Even spacing understates the
+        # real clustering, so the synthetic soiling loss is a little lower than
+        # the real Delhi figure -- an error in the safe direction for a fixture
+        # whose job is to be representative rather than adversarial.
+        wet_days = (
+            {round((i + 0.5) * days_in_month / rain_days) for i in range(rain_days)}
+            if rain_days
+            else set()
+        )
+        for day in range(1, days_in_month + 1):
+            when = _dt.date(first.year, month, day)
+            if not (first <= when < last):
+                continue
+            mm = PRECIP_WET_DAY_MM if day in wet_days else PRECIP_DRY_DAY_MM
+            images.append(
+                FakeImage.from_bands(
+                    {
+                        # Metres, as ERA5-Land publishes it. Converting is the
+                        # production code's job, and that is the point.
+                        "total_precipitation_sum": np.full(SHAPE, mm / 1000.0),
+                        # Radiation lives in the same daily collection, because
+                        # in the real catalogue it does. GHI moved here from the
+                        # hourly collection for a 23x speedup, and the band is
+                        # an accumulation so the period total is unchanged.
+                        "surface_solar_radiation_downwards_sum": np.full(
+                            SHAPE, ERA5_LAND_J_PER_DAY
+                        ),
+                    },
+                    native_scale_m=fake.NATIVE_SCALE_M,
+                )
+            )
+    return images
+
+
+def expected_cleaning_rain_days() -> int:
+    """The cleaning-rain day count the world is built to produce."""
+    return sum(PRECIP_RAIN_DAYS_BY_MONTH.values())
 
 
 def register_world() -> None:
@@ -130,6 +232,7 @@ def register_world() -> None:
             ERA5_LAND_IMAGES,
         ),
     )
+    fake.register_collection("ECMWF/ERA5_LAND/DAILY_AGGR", _daily_precip_builder)
     fake.register_collection(
         "ECMWF/ERA5/HOURLY",
         _constant_collection(

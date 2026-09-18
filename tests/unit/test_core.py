@@ -15,6 +15,7 @@ of the decisions taken:
 
 from __future__ import annotations
 
+import pathlib
 from datetime import date, timedelta
 from typing import ClassVar
 
@@ -547,3 +548,112 @@ class TestQ2Twenty26:
         cov = coverage_mod.window_coverage("2026-04-01", "2026-07-01", latest=date(2026, 6, 14))
         assert cov.status == "partial"
         assert cov.warning and "past the end" in cov.warning
+
+
+class TestCorsOriginsFromEnvironment:
+    """
+    The documented configuration syntax must actually work.
+
+    This found a real defect. pydantic-settings treats a ``list`` field as
+    complex and tries to **JSON-decode** the environment value before any
+    validator runs, so the comma-separated form printed in ``.env.example`` and
+    in the deployment runbook raised ``SettingsError`` at startup. It was
+    invisible locally, because an unset variable uses the default -- meaning it
+    would have surfaced for the first time on the production deploy that set
+    it, as a container that would not boot.
+    """
+
+    def _settings(self, monkeypatch, value):
+        from solaris.core.config import Settings
+
+        monkeypatch.setenv("SOLARIS_CORS_ORIGINS", value)
+        return Settings()
+
+    def test_the_documented_comma_separated_form_parses(self, monkeypatch):
+        settings = self._settings(monkeypatch, "https://a.example,https://b.example")
+        assert settings.cors_origins == ["https://a.example", "https://b.example"]
+
+    def test_a_single_origin_parses(self, monkeypatch):
+        assert self._settings(monkeypatch, "https://solo.example").cors_origins == [
+            "https://solo.example"
+        ]
+
+    def test_whitespace_is_tolerated(self, monkeypatch):
+        settings = self._settings(monkeypatch, " https://a.example , https://b.example ")
+        assert settings.cors_origins == ["https://a.example", "https://b.example"]
+
+    def test_a_json_array_also_parses(self, monkeypatch):
+        """
+        Accepted too. It is what pydantic-settings would have expected, and
+        someone following its conventions rather than ours should not be
+        punished for it.
+        """
+        settings = self._settings(monkeypatch, '["https://a.example", "https://b.example"]')
+        assert settings.cors_origins == ["https://a.example", "https://b.example"]
+
+    def test_malformed_json_gives_an_actionable_message(self, monkeypatch):
+        import pytest
+
+        with pytest.raises(Exception, match="comma-separated"):
+            self._settings(monkeypatch, '["https://a.example",')
+
+    def test_a_wildcard_is_still_rejected_from_the_environment(self, monkeypatch):
+        """
+        The split path must not become a way around the wildcard rejection.
+        """
+        import pytest
+
+        with pytest.raises(Exception, match="must not contain"):
+            self._settings(monkeypatch, "https://a.example,*")
+
+    def test_an_unset_variable_uses_the_local_default(self, monkeypatch):
+        from solaris.core.config import Settings
+
+        monkeypatch.delenv("SOLARIS_CORS_ORIGINS", raising=False)
+        assert Settings().cors_origins == [
+            "http://localhost:8000",
+            "http://127.0.0.1:8000",
+        ]
+
+
+class TestEnvFileDiscovery:
+    """
+    ``.env`` must be found regardless of the working directory.
+
+    A bare ``env_file=".env"`` resolves against the cwd, so ``solaris-api``
+    read it only when launched from the repo root and **silently ignored it
+    everywhere else**. The symptom was an Earth Engine permission error naming
+    a project the user had never chosen -- their configuration had simply never
+    been loaded, with nothing to say so. Same class as the relative
+    ``StaticFiles`` path this project already fixed.
+    """
+
+    def test_the_project_env_file_is_found_by_walking_up(self):
+        from solaris.core.config import ENV_FILES
+
+        assert len(ENV_FILES) >= 2, ENV_FILES
+        # The first candidate must be an absolute path next to pyproject.toml,
+        # which is what makes it cwd-independent.
+        first = pathlib.Path(ENV_FILES[0])
+        assert first.is_absolute(), ENV_FILES
+        assert first.name == ".env"
+        assert (first.parent / "pyproject.toml").is_file()
+
+    def test_the_cwd_relative_path_is_kept_as_a_fallback(self):
+        """
+        Last, not first: a deployment that arranges its own local ``.env``
+        should still win, but it must not be the only place looked at.
+        """
+        from solaris.core.config import ENV_FILES
+
+        assert ENV_FILES[-1] == ".env"
+
+    def test_redacted_reports_which_file_was_loaded(self):
+        """
+        The most common local confusion is configuration that was never read.
+        Reporting the path makes that answerable instead of leaving it to be
+        inferred from a surprising project id.
+        """
+        from solaris.core.config import Settings
+
+        assert "env_file_loaded" in Settings().redacted()

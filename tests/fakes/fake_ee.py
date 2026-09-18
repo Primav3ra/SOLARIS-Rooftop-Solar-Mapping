@@ -272,6 +272,19 @@ class FakeImage:
     def selfMask(self) -> FakeImage:
         return self._unary(lambda a: np.where(a > 0, a, np.nan))
 
+    def mask(self) -> FakeImage:
+        """
+        The image's mask as a 0/1 image, as ``ee.Image.mask()`` returns.
+
+        NaN stands in for "masked" throughout this fake, so the mask is simply
+        where the value is not NaN. Note the deliberate limitation: real Earth
+        Engine distinguishes an image's *mask* from its *footprint*, and this
+        fake has no footprint at all. That gap is why a shadow bug which eroded
+        the footprint through repeated ``translate`` calls was invisible here
+        and needed a live integration test to find.
+        """
+        return self._unary(lambda a: np.where(np.isnan(a), 0.0, 1.0))
+
     def unmask(self, value: float = 0.0) -> FakeImage:
         return self._unary(lambda a, v=float(value): np.where(np.isnan(a), v, a))
 
@@ -863,8 +876,17 @@ class FakeFeature:
 
 
 class FakeFeatureCollection:
-    def __init__(self, features: list[FakeFeature]):
-        self._features = list(features)
+    def __init__(self, features):
+        # Accepts a bare list, or another collection -- ``ee.FeatureCollection``
+        # is routinely used to re-wrap the result of ``ImageCollection.map``,
+        # and refusing that would force the production code into a shape it
+        # does not need to take.
+        if isinstance(features, FakeFeatureCollection):
+            self._features = list(features._features)
+        elif hasattr(features, "_materialize"):
+            self._features = list(features._materialize())
+        else:
+            self._features = list(features)
 
     def filterBounds(self, geometry):
         return self
@@ -886,6 +908,25 @@ class FakeFeatureCollection:
 
     def toList(self, n, offset=0):
         return FakeList(self._features[offset : offset + int(n)])
+
+    def map(self, fn):
+        return FakeFeatureCollection([fn(f) for f in self._features])
+
+    def aggregate_array(self, prop):
+        """
+        One property from every feature, in order.
+
+        This is what keeps a per-day reduction at a single round-trip in
+        production, so the fake has to support it or the offline suite cannot
+        exercise that path at all. A ``None`` is preserved rather than dropped:
+        a masked cell yields one, and whether the caller distinguishes an
+        unknown day from a dry day is precisely what needs testing.
+        """
+        values = []
+        for feature in self._features:
+            value = feature.get(prop)
+            values.append(value.getInfo() if hasattr(value, "getInfo") else value)
+        return FakeList(values)
 
     def getInfo(self):
         return {
@@ -957,7 +998,19 @@ class FakeImageCollection:
         return self
 
     def map(self, fn):
-        return FakeImageCollection([fn(im) for im in self._materialize()])
+        """
+        Map over the images.
+
+        Returns a :class:`FakeFeatureCollection` when the function produces
+        features rather than images, mirroring Earth Engine, where mapping a
+        reduction over a collection yields a feature collection. Returning an
+        image collection regardless would have made the per-day precipitation
+        reduction untestable.
+        """
+        mapped = [fn(im) for im in self._materialize()]
+        if mapped and all(isinstance(m, FakeFeature) for m in mapped):
+            return FakeFeatureCollection(mapped)
+        return FakeImageCollection(mapped)
 
     # -- aggregation ------------------------------------------------------
 
@@ -1100,6 +1153,26 @@ class _ReducerNamespace:
     def count():
         return _Reducer("count", lambda v: float(v.size))
 
+    @staticmethod
+    def first():
+        """
+        The first unmasked value.
+
+        Real Earth Engine returns the first pixel in raster order, masked
+        pixels included as nulls; here the flattened array is already
+        NaN-filled for masked pixels, so "first valid" is both the useful
+        semantics and what a single-pixel point reduction actually yields.
+        Returns NaN when every pixel is masked, which the caller must treat as
+        an unknown rather than a zero.
+        """
+
+        def _first(v):
+            flat = np.asarray(v).ravel()
+            valid = flat[~np.isnan(flat)]
+            return float(valid[0]) if valid.size else float("nan")
+
+        return _Reducer("first", _first)
+
 
 class _Reducer:
     def __init__(self, name: str, fn):
@@ -1192,12 +1265,28 @@ def Dictionary(mapping=None):
     return FakeDictionary(mapping or {})
 
 
-def Feature(source, geometry=None):
-    if isinstance(source, FakeFeature):
-        return source
-    if isinstance(source, dict):
-        return FakeFeature(source.get("properties", {}), geometry)
-    return FakeFeature({}, geometry)
+def Feature(geometry=None, properties=None):
+    """
+    ``ee.Feature(geometry, properties)`` -- argument order as in Earth Engine.
+
+    This signature used to be reversed (``Feature(source, geometry)``), which
+    made the standard idiom for a geometry-less feature carrying one property,
+    ``ee.Feature(None, {"p": value})``, construct a feature whose *geometry*
+    was the dict and which had no properties at all. Nothing raised: the
+    property simply read back as ``None``, for all 365 days of a per-day
+    reduction, and the code under test took its no-data fallback while
+    appearing to work.
+
+    Accepts an already-built feature and a GeoJSON mapping, both of which the
+    real constructor also accepts.
+    """
+    if isinstance(geometry, FakeFeature):
+        return geometry
+    if isinstance(geometry, dict):
+        # GeoJSON-ish: properties come from the mapping, not the second
+        # argument.
+        return FakeFeature(geometry.get("properties") or {}, None)
+    return FakeFeature(dict(properties or {}), geometry)
 
 
 def FeatureCollection(source, *args, **kwargs):

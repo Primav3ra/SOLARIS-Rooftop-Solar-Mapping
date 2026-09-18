@@ -71,26 +71,34 @@ def spa_reference():
 @pytest.fixture(autouse=True)
 def _test_limits(monkeypatch):
     """
-    Disable rate limiting for the suite, and reset the shared counters.
+    Disable rate limiting and the guest allowance for the suite, and reset the
+    shared counters.
 
-    Necessary because the limiter is process-global and every TestClient
-    request shares one identity, so a module making more than
+    Necessary because all three are process-global and every TestClient request
+    shares one identity, so a module making more than
     ``rate_limit_per_minute`` requests starts getting 429s partway through --
     which showed up as a confusing KeyError on a response body that was
-    actually an error envelope. Limiting behaviour is tested explicitly in
-    tests/unit/test_core.py and test_api_limits.py rather than incidentally
-    here.
+    actually an error envelope. The guest allowance did the same thing with
+    403s after the third computation in a module, which is a fair description
+    of what a real guest experiences and a terrible one for a test fixture.
+
+    All three behaviours are tested explicitly in tests/unit/test_core.py and
+    test_api_limits.py rather than incidentally here.
     """
     monkeypatch.setenv("SOLARIS_RATE_LIMIT_PER_MINUTE", "0")
     monkeypatch.setenv("SOLARIS_RATE_LIMIT_PER_DAY", "0")
+    monkeypatch.setenv("SOLARIS_GUEST_COMPUTATION_ALLOWANCE", "0")
 
+    from solaris.api import auth
     from solaris.core import cache, limits
     from solaris.core.config import get_settings
 
     get_settings.cache_clear()
     limits.reset_limits()
     cache.reset_cache()
+    auth.reset_guest_allowance()
     yield
     limits.reset_limits()
     cache.reset_cache()
+    auth.reset_guest_allowance()
     get_settings.cache_clear()

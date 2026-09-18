@@ -79,10 +79,24 @@ def client(monkeypatch):
 
 def test_every_ee_consumer_is_patched(client):
     """
-    Guards against a new module doing ``import ee`` without being added to
-    EE_CONSUMERS -- which would leak to the real Earth Engine.
+    Guards against a new module doing ``import ee`` and leaking to the real
+    Earth Engine.
+
+    The consumer list is discovered by walking the ``solaris`` package rather
+    than hand-maintained. That distinction is the whole value of this test:
+    while the list was written down, this assertion compared it against itself
+    and passed regardless. Adding ``solaris.gee.precipitation`` then produced
+    eleven failures with a live authentication error, which is exactly what the
+    test was supposed to prevent.
     """
+    from tests.fakes.install import discover_ee_consumers
+
+    consumers = discover_ee_consumers()
     assert assert_all_consumers_patched() == []
+    # A floor, so an import error that empties the discovery is not mistaken
+    # for a clean run.
+    assert len(consumers) >= 7, consumers
+    assert "solaris.gee.precipitation" in consumers
 
 
 def _strip_volatile(obj):
