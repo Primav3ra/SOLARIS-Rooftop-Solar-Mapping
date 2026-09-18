@@ -1,5 +1,6 @@
-<h1 align="center">SOLARIS</h1> https://solaris-6z7g4xx6iq-el.a.run.app
+<h1 align="center">SOLARIS</h1>
 <p align="center">
+   https://solaris-6z7g4xx6iq-el.a.run.app
   Rooftop solar potential for urban India, computed on demand from open satellite data.<br>
   Google Earth Engine · FastAPI · pvlib · React + MapLibre GL
 </p>
