@@ -81,6 +81,14 @@ jobs:
 
       - uses: google-github-actions/setup-gcloud@v2
 
+      # Required by `cache-to: type=gha` below. The runner's default Docker
+      # driver cannot export a cache, so without this the build fails with
+      # "Cache export is not supported for the docker driver" -- and it fails
+      # at the push step, after the image has already been built, which makes
+      # it read like a registry problem. ci.yml had this and deploy.yml did
+      # not.
+      - uses: docker/setup-buildx-action@v3
+
       - name: Configure Artifact Registry
         run: gcloud auth configure-docker ${{ env.REGION }}-docker.pkg.dev --quiet
 

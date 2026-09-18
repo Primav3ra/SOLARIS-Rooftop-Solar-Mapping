@@ -775,7 +775,10 @@ def compute_yield(req: YieldRequest, request: Request) -> Response:
 
         # Bound concurrent Earth Engine work and count it against the daily
         # budget. /api/yield makes roughly a dozen round-trips.
-        ee_stack.enter_context(deps.ee_gate(n_calls=12))
+        # 12 round-trips whatever the window, but the compute -- which is what
+        # Earth Engine bills -- scales with it, so the budget is charged the
+        # window's cost rather than the call count.
+        ee_stack.enter_context(deps.ee_gate(n_calls=12, cost=C.ee_cost_units(win["mode"])))
         deps.ensure_ee()
         coords, aoi = deps.aoi_from_req(req)
         centroid = aoi.centroid(1)

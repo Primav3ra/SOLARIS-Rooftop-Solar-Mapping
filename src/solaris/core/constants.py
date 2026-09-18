@@ -122,3 +122,70 @@ MAX_HALF_SIZE_DEG = 0.025  # ~2.8 km half-side => ~27 km2 at Delhi latitude
 MAX_AOI_VERTICES = 100
 MAX_BUILDINGS = 2000
 DEFAULT_HALF_SIZE_DEG = 0.01
+
+
+# ---------------------------------------------------------------------------
+# Earth Engine compute cost
+# ---------------------------------------------------------------------------
+
+#: Monthly EECU-second ceiling on the Earth Engine noncommercial tier.
+#:
+#: A **system limit**, not a quota: the console reports it as non-adjustable,
+#: and the daily figure alongside it reads "Unlimited" with no setting. So
+#: there is no lever on Google's side, and the only possible guard is in this
+#: application.
+NONCOMMERCIAL_EECU_SECONDS_PER_MONTH = 540_000
+
+#: Measured burn rate, recorded because it is the basis for the default budget.
+#:
+#: One day of development -- a few dozen queries, mostly yearly windows, plus
+#: the live integration tests and the round-trip profiler -- consumed 39,301
+#: EECU-seconds, which was 91% of that month's usage to date.
+MEASURED_DEV_DAY_EECU_SECONDS = 39_301
+
+#: EECU-seconds per cost unit, where one unit is one monthly-window query.
+#:
+#: Derived from the figure above rather than guessed, and the derivation is
+#: written out because it is an estimate with real uncertainty:
+#:
+#:   39,301 EECU-seconds over roughly 30 substantive queries, predominantly
+#:   yearly windows at 12 units each, gives on the order of 360 cost units, so
+#:   about 110 EECU-seconds per unit. Rounded up to 120 for margin.
+#:
+#: Note the trap this replaced: the first attempt used ~1,000 EECU-seconds per
+#: *unit*, which was really the cost of a yearly *query* -- twelve units. That
+#: put the default budget at more than twice the monthly ceiling, and a test
+#: asserting the budget fits inside the ceiling is what caught it.
+#:
+#: Refine this by watching the console meter against the logged cost, not by
+#: re-deriving it from first principles.
+EECU_SECONDS_PER_COST_UNIT = 120
+
+#: Relative compute cost of a query, by temporal mode.
+#:
+#: Cost tracks the number of daily images the window reduces over, which is
+#: what the irradiance, precipitation and shadow reductions all scale with. A
+#: yearly query sums 365 daily images against 31 for a month, and its sun-position
+#: set is larger too.
+#:
+#: Normalised so a monthly query costs 1. The budget is charged in these units
+#: rather than in round-trips: round-trip count is nearly constant across modes
+#: (12 for every /api/yield), so counting calls treated a yearly query and a
+#: single-day query as identical when they differ by more than an order of
+#: magnitude in compute.
+EE_COST_UNITS = {
+    "daily": 0.1,
+    "monthly": 1.0,
+    "quarterly": 3.0,
+    "yearly": 12.0,
+}
+
+#: Cost of a tile rendering, in the same units. Tiles reduce at the map's own
+#: scale rather than 4 m, so they are cheaper than a yield reduction, but the
+#: roof preview fires on selection and so runs more often.
+EE_COST_UNITS_TILE = 0.5
+
+
+def ee_cost_units(mode: str) -> float:
+    """Relative compute cost for a temporal mode, defaulting to the dearest."""
+    return EE_COST_UNITS.get(mode, max(EE_COST_UNITS.values()))

@@ -20,7 +20,7 @@ ruff check src tests
 ruff format src tests
 ```
 
-Current state: **656 tests passing**, `gee`-marked tests deselected by default
+Current state: **660 tests passing**, `gee`-marked tests deselected by default
 via `addopts` in `pyproject.toml`.
 
 ## Where a change goes

@@ -172,7 +172,7 @@ Full list in `.env.example`. The ones that matter in production:
 | `SOLARIS_CACHE_BACKEND` | `firestore` | Tiered: memory in front of Firestore. |
 | `SOLARIS_CORS_ORIGINS` | your domain | A wildcard is **rejected at startup**, not warned about. |
 | `SOLARIS_LOG_FORMAT` | `json` | Cloud Logging needs `severity`, not `level`. |
-| `SOLARIS_DAILY_EE_CALL_BUDGET` | `5000` | The real quota guard. |
+| `SOLARIS_DAILY_EE_COST_BUDGET` | `40` | Cost units/day, not round-trips. The only quota guard available: the monthly EECU ceiling is a non-adjustable system limit. |
 | `SOLARIS_GUEST_COMPUTATION_ALLOWANCE` | `10` | Comparing several roofs is the primary task, so this must exceed the number of sites a visitor will examine. |
 
 Credentials resolve through plain `google.auth.default()`, which works
@@ -194,20 +194,33 @@ Cheapest first, because they defend against different things.
    does nothing about one client making expensive calls. Backed by a Firestore
    `Increment` so it is genuinely global across instances.
 
-### The unit mismatch that matters
+### The quota, and why the budget counts what it counts
 
-`SOLARIS_DAILY_EE_CALL_BUDGET` counts **round-trips**. Earth Engine bills
-**EECU-seconds**. These are unrelated: one `/api/yield` over a yearly window is
-12 round-trips but roughly 100 s of wall clock and substantial server-side
-compute, while 12 round-trips over a single day is a small fraction of that.
+Earth Engine bills **EECU-seconds**. Round-trip count is nearly constant across
+temporal modes — every `/api/yield` makes 12 — while compute scales with the
+window, so a yearly query costs more than ten times a single-day one. A budget
+denominated in calls therefore charged the cheapest and dearest queries
+identically, and at its old default of 5000 calls/day could have exhausted a
+month's allowance while reporting ample headroom.
 
-So the in-app budget protects against a flood of requests. It does **not**
-protect against a small number of expensive ones, and a budget of 5000 calls
-can exhaust a monthly EECU allowance while reporting ample headroom.
+The budget is now denominated in **cost units**, one unit being a
+monthly-window query, with a yearly window charged 12. See
+`solaris.core.constants.EE_COST_UNITS`.
 
-**Set a daily EECU cap in the Earth Engine console** — Configuration → *Manage
-quota limits*. That is the only guard denominated in the unit that actually
-binds. Start low and raise it once real usage is visible on the same page.
+**There is no console-side cap to set.** The Earth Engine console reports
+*Noncommercial EECU-seconds per month* as a **system limit** with adjustable =
+No, and *EECU-seconds per day* as "Unlimited", also not adjustable. On the
+noncommercial tier Google offers no lever, so the application's own budget is
+the only guard.
+
+Measured, on this project: one development day consumed **39,301** of the
+540,000 monthly EECU-seconds — 91% of that month's usage — from a few dozen
+queries. At that rate the month exhausts in under 14 days.
+
+`SOLARIS_DAILY_EE_COST_BUDGET` therefore counts cost units rather than
+round-trips, and defaults to 40/day, which is roughly 27% of the monthly
+ceiling. Watch the console meter against the `ee_cost` field in the request
+logs and adjust from evidence.
 
 Note also that the non-commercial **Community tier** carries no SLA and lower
 concurrency limits than the commercial tiers. That is appropriate for a

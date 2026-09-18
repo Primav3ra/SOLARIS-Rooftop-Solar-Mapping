@@ -327,26 +327,38 @@ def _ee_tile_template(image: ee.Image, vis: dict[str, Any]) -> str:
     return m["tile_fetcher"].url_format
 
 
-def ee_gate(n_calls: int = 1):
+def ee_gate(n_calls: int = 1, cost: float | None = None):
     """
-    A bounded Earth Engine slot, counted against the daily budget.
+    A bounded Earth Engine slot, charged against the daily compute budget.
 
     Wrap any block that makes ``getInfo()`` calls::
 
-        with deps.ee_gate(n_calls=6):
+        with deps.ee_gate(n_calls=12, cost=ee_cost_units(mode)):
             ...
+
+    ``n_calls`` is the round-trip count, used only for the per-request log
+    line. ``cost`` is what the budget is charged, in the units of
+    ``constants.EE_COST_UNITS``, and defaults to ``n_calls`` for callers that
+    have no better estimate.
+
+    The two are separate because they measure different things. Round-trips are
+    nearly constant across temporal modes -- 12 for every ``/api/yield`` -- while
+    compute scales with the window, so a yearly query costs more than ten times
+    a single-day one. Earth Engine bills the compute, so the budget has to
+    charge the compute.
 
     Two things this does that a request timeout cannot. It bounds concurrency:
     every endpoint is a sync ``def``, so FastAPI runs it on a threadpool of 40,
     and without a cap one instance can hold 40 blocking ``getInfo()`` calls
-    open at once. And it counts round-trips against a daily budget denominated
-    in the resource actually being consumed, rather than in HTTP requests.
+    open at once. And it stops work when the day's compute allowance is gone,
+    which is the only guard available -- the monthly EECU ceiling is a system
+    limit with no console-side setting.
     """
     from solaris.api.middleware import record_ee_calls
     from solaris.core.limits import get_gate
 
     record_ee_calls(n_calls)
-    return get_gate().slot(n_calls=n_calls)
+    return get_gate().slot(n_calls=n_calls if cost is None else cost)
 
 
 def charge_computation(request: Any) -> None:

@@ -28,6 +28,8 @@ from typing import Annotated, Literal
 from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
+from solaris.core.constants import NONCOMMERCIAL_EECU_SECONDS_PER_MONTH
+
 Environment = Literal["local", "ci", "prod"]
 AuthMode = Literal["auto", "adc", "sa_json", "sa_file", "local"]
 CacheBackend = Literal["memory", "firestore", "none"]
@@ -147,7 +149,29 @@ class Settings(BaseSettings):
     #: Denominated in the resource actually being consumed rather than in HTTP
     #: requests, which is why it protects the quota where a request-rate limit
     #: would not.
-    daily_ee_call_budget: int = Field(default=5000, ge=0)
+    #: Daily ceiling in **cost units**, where one unit is one monthly-window
+    #: query. See ``constants.EE_COST_UNITS``.
+    #:
+    #: 40 rather than 5000, and in a different unit, because the previous
+    #: figure was denominated in round-trips and the quota is denominated in
+    #: compute. Every ``/api/yield`` makes 12 round-trips regardless of window,
+    #: so counting calls valued a single-day query and a yearly one equally
+    #: when they differ by more than 10x in EECU-seconds.
+    #:
+    #: Sizing, from ``constants``: the noncommercial ceiling is 540,000
+    #: EECU-seconds per month and is not adjustable, and one cost unit measures
+    #: at roughly 120 EECU-seconds. The ceiling therefore allows about 4,500
+    #: units a month, or 150 a day.
+    #:
+    #: 40/day is deliberately well under that -- about 27% of the ceiling over a
+    #: month -- because the per-unit figure is an estimate from a single
+    #: observed day, and because development and the evaluation suite draw on
+    #: the same quota. In practical terms it admits roughly 40 monthly-window
+    #: queries a day, or 3 yearly ones.
+    #:
+    #: Raise it deliberately after watching the console meter, not on the
+    #: assumption that headroom exists.
+    daily_ee_cost_budget: float = Field(default=40.0, ge=0)
 
     #: Requests per identity per window. Keyed on the signed-in subject where
     #: available, falling back to client IP.
@@ -276,7 +300,8 @@ class Settings(BaseSettings):
             "cors_origins": self.cors_origins,
             "cache_backend": self.cache_backend,
             "max_concurrent_ee_calls": self.max_concurrent_ee_calls,
-            "daily_ee_call_budget": self.daily_ee_call_budget,
+            "daily_ee_cost_budget": self.daily_ee_cost_budget,
+            "monthly_eecu_ceiling": NONCOMMERCIAL_EECU_SECONDS_PER_MONTH,
             "rate_limit_per_minute": self.rate_limit_per_minute,
             "guest_computation_allowance": self.guest_computation_allowance,
             "log_level": self.log_level,

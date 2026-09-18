@@ -166,35 +166,97 @@ class TestRateLimiting:
 
 
 class TestBudget:
-    def test_an_exhausted_budget_returns_503(self, monkeypatch):
-        """
-        The budget is denominated in Earth Engine round-trips, not HTTP
-        requests, which is why it protects the quota where a request-rate limit
-        would not.
-        """
-        monkeypatch.setenv("SOLARIS_DAILY_EE_CALL_BUDGET", "5")
+    """
+    The budget is denominated in Earth Engine **compute cost**, not round-trips
+    and not HTTP requests.
+
+    That is what makes it protect the quota. Earth Engine bills EECU-seconds;
+    every ``/api/yield`` makes 12 round-trips regardless of window; and a yearly
+    window costs more than ten times a single-day one. A call-counting budget
+    therefore charged the cheapest and dearest queries identically, while the
+    monthly EECU ceiling is a system limit with no console-side setting -- so
+    this counter is the only guard available.
+    """
+
+    def _prepare(self, monkeypatch, budget):
+        monkeypatch.setenv("SOLARIS_DAILY_EE_COST_BUDGET", str(budget))
         get_settings.cache_clear()
         limits_mod.reset_limits()
         cache_mod.reset_cache()
         install_fake_ee(monkeypatch)
         world.register_world()
-        client = _client()
+        return _client()
 
-        # /api/yield declares 12 calls, so the first request alone exceeds a
-        # budget of 5.
-        response = client.post("/api/yield", json=_request())
+    def test_an_exhausted_budget_returns_503(self, monkeypatch):
+        # A yearly window costs 12 units, so it alone exceeds a budget of 5.
+        client = self._prepare(monkeypatch, 5)
+        response = client.post("/api/yield", json=_request(baseline_mode="yearly", year=2023))
         assert response.status_code == 503
         assert response.json()["error"]["code"] == "budget_exhausted"
         assert response.headers.get("Retry-After")
 
     def test_a_generous_budget_allows_the_request(self, monkeypatch):
-        monkeypatch.setenv("SOLARIS_DAILY_EE_CALL_BUDGET", "10000")
-        get_settings.cache_clear()
-        limits_mod.reset_limits()
-        cache_mod.reset_cache()
-        install_fake_ee(monkeypatch)
-        world.register_world()
-        assert _client().post("/api/yield", json=_request()).status_code == 200
+        client = self._prepare(monkeypatch, 10_000)
+        assert client.post("/api/yield", json=_request()).status_code == 200
+
+    def test_a_cheap_window_passes_a_budget_a_dear_one_would_not(self, monkeypatch):
+        """
+        The behaviour the old unit could not express.
+
+        A budget of 5 units admits a single-day query (0.1 units) and refuses a
+        yearly one (12), although both make the same 12 round-trips.
+        """
+        client = self._prepare(monkeypatch, 5)
+        daily = client.post(
+            "/api/yield",
+            json=_request(
+                baseline_mode="daily",
+                start_date="2023-06-15",
+                end_date_exclusive="2023-06-16",
+            ),
+        )
+        assert daily.status_code == 200, daily.text
+
+        yearly = client.post("/api/yield", json=_request(baseline_mode="yearly", year=2023))
+        assert yearly.status_code == 503
+
+    def test_the_cost_of_a_window_rises_with_its_length(self):
+        """
+        Cost tracks the number of daily images the window reduces over, which
+        is what the irradiance, precipitation and shadow reductions scale with.
+        """
+        from solaris.core import constants as C
+
+        costs = [C.ee_cost_units(m) for m in ("daily", "monthly", "quarterly", "yearly")]
+        assert costs == sorted(costs)
+        assert costs[-1] >= 10 * costs[1], "a year should cost far more than a month"
+
+    def test_an_unknown_mode_is_charged_the_dearest(self):
+        """Fail expensive: an unrecognised window must not be charged as cheap."""
+        from solaris.core import constants as C
+
+        assert C.ee_cost_units("something-new") == max(C.EE_COST_UNITS.values())
+
+    def test_the_monthly_ceiling_is_recorded(self):
+        """
+        540,000 EECU-seconds, a system limit with no adjustable setting. The
+        default daily budget is sized against it, so the number belongs in the
+        code rather than in a runbook.
+        """
+        from solaris.core import constants as C
+
+        assert C.NONCOMMERCIAL_EECU_SECONDS_PER_MONTH == 540_000
+        settings = get_settings()
+        # A month at the default budget must fit inside the ceiling, using the
+        # per-unit cost recorded in constants rather than a number invented
+        # here. This assertion caught the default being set from the cost of a
+        # yearly query rather than of a unit -- a factor-of-twelve error that
+        # put the budget at more than twice the ceiling.
+        monthly_spend = settings.daily_ee_cost_budget * 30 * C.EECU_SECONDS_PER_COST_UNIT
+        assert monthly_spend <= C.NONCOMMERCIAL_EECU_SECONDS_PER_MONTH, (
+            f"default budget implies {monthly_spend:,.0f} EECU-s/month against a "
+            f"{C.NONCOMMERCIAL_EECU_SECONDS_PER_MONTH:,} ceiling"
+        )
 
 
 class TestErrorEnvelope:

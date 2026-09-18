@@ -16,17 +16,28 @@ is also why the request timeout is not sufficient on its own: an ``anyio``
 timeout frees the *client*, but ``getInfo()`` is uninterruptible blocking I/O,
 so the worker thread keeps going.
 
-**3. A daily Earth Engine call budget.** Denominated in the resource actually
-being consumed rather than in HTTP requests. That is the difference that
-matters: a per-IP request limit does nothing about one authenticated client
-making expensive calls, whereas this counts round-trips and stops when the day's
-allowance is gone.
+**3. A daily Earth Engine compute budget**, and this is the layer that actually
+protects the quota.
 
-Per-identity rate limiting sits alongside these, keyed on the signed-in subject
-where available and falling back to IP. IP alone is weak in India specifically:
-mobile carriers use carrier-grade NAT, so thousands of users share an egress
-address -- an IP-keyed limit punishes them collectively while one determined
-user simply rotates addresses.
+It counts **cost units**, not round-trips. That distinction was not academic:
+Earth Engine bills EECU-seconds, every ``/api/yield`` makes 12 round-trips
+regardless of window, and a yearly window costs more than ten times a
+single-day one. A call-counting budget therefore treated the cheapest and
+dearest queries as identical.
+
+The ceiling it defends is fixed and cannot be raised from the console. The
+noncommercial tier allows 540,000 EECU-seconds per month as a **system limit**,
+and the daily figure beside it reads "Unlimited" with no adjustable setting --
+so Google offers no lever and this counter is the only guard available. One
+measured day of development consumed 39,301 EECU-seconds, about 91% of that
+month's usage to date, from a few dozen queries. See
+``constants.EE_COST_UNITS``.
+
+Per-identity rate limiting sits alongside these, keyed on an opaque session
+token where one is presented and falling back to IP. IP alone is weak in India
+specifically: mobile carriers use carrier-grade NAT, so thousands of
+subscribers share an egress address -- an IP-keyed limit restricts them
+collectively while one determined caller rotates addresses.
 """
 
 from __future__ import annotations
@@ -39,7 +50,7 @@ from datetime import date
 
 
 class BudgetExceededError(RuntimeError):
-    """The daily Earth Engine call budget is exhausted."""
+    """The daily Earth Engine compute budget is exhausted."""
 
 
 class RateLimitExceededError(RuntimeError):
@@ -62,7 +73,7 @@ class ConcurrencyTimeoutError(RuntimeError):
 @dataclass
 class EarthEngineBudget:
     """
-    A daily ceiling on Earth Engine round-trips, reset by date.
+    A daily ceiling on Earth Engine **compute cost**, reset by date.
 
     In-process here. A multi-instance deployment needs this in a shared store
     (Firestore's ``FieldValue.increment`` is the intended implementation) or
@@ -70,9 +81,9 @@ class EarthEngineBudget:
     so swapping the counter is a small change.
     """
 
-    limit: int
+    limit: float
     _day: str = ""
-    _count: int = 0
+    _count: float = 0.0
     _lock: threading.Lock = field(default_factory=threading.Lock)
 
     def _roll(self) -> None:
@@ -81,31 +92,33 @@ class EarthEngineBudget:
             self._day, self._count = today, 0
 
     @property
-    def used(self) -> int:
+    def used(self) -> float:
         with self._lock:
             self._roll()
             return self._count
 
     @property
-    def remaining(self) -> int:
-        return max(0, self.limit - self.used)
+    def remaining(self) -> float:
+        return max(0.0, self.limit - self.used)
 
-    def consume(self, n: int = 1) -> None:
+    def consume(self, n: float = 1.0) -> None:
         """Record ``n`` calls, raising once the day's allowance is gone."""
         with self._lock:
             self._roll()
             if self.limit and self._count + n > self.limit:
                 raise BudgetExceededError(
-                    f"Daily Earth Engine budget of {self.limit} calls is exhausted "
-                    f"({self._count} used). Resets at UTC midnight."
+                    f"Daily Earth Engine compute budget of {self.limit:g} units is "
+                    f"exhausted ({self._count:g} used). One unit is roughly one "
+                    f"monthly-window query. Resets at UTC midnight."
                 )
             self._count += n
 
-    def as_dict(self) -> dict[str, int | str]:
+    def as_dict(self) -> dict[str, float | str]:
         return {
             "limit": self.limit,
-            "used": self.used,
-            "remaining": self.remaining,
+            "used": round(self.used, 2),
+            "remaining": round(self.remaining, 2),
+            "unit": "cost units; 1 = one monthly-window query",
             "day": self._day or date.today().isoformat(),
         }
 
@@ -189,7 +202,7 @@ class EarthEngineGate:
         with self._lock:
             return self._in_flight
 
-    def slot(self, n_calls: int = 1, timeout_s: float = 30.0):
+    def slot(self, n_calls: float = 1.0, timeout_s: float = 30.0):
         return _GateSlot(self, n_calls=n_calls, timeout_s=timeout_s)
 
     def as_dict(self) -> dict[str, object]:
@@ -201,7 +214,7 @@ class EarthEngineGate:
 
 
 class _GateSlot:
-    def __init__(self, gate: EarthEngineGate, n_calls: int, timeout_s: float):
+    def __init__(self, gate: EarthEngineGate, n_calls: float, timeout_s: float):
         self._gate = gate
         self._n_calls = n_calls
         self._timeout_s = timeout_s
@@ -247,7 +260,7 @@ def get_gate() -> EarthEngineGate:
                 from solaris.core.config import get_settings
 
                 settings = get_settings()
-                budget: object = EarthEngineBudget(limit=settings.daily_ee_call_budget)
+                budget: object = EarthEngineBudget(limit=settings.daily_ee_cost_budget)
                 if settings.cache_backend == "firestore":
                     # The same Firestore dependency that backs the persistent
                     # cache also makes this counter global rather than
