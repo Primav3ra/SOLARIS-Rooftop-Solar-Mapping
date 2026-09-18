@@ -1,20 +1,35 @@
 # syntax=docker/dockerfile:1
 
 # ---------------------------------------------------------------------------
-# Stage 1: build the frontend bundle
+# Stage 1: build the frontend
 #
-# Separate stage so Node never reaches the runtime image. The dashboard
-# degrades to a CSS-only header if the bundle is absent, so this stage failing
-# is non-fatal for the API.
+# A separate stage so Node never reaches the runtime image.
+#
+# The site is *built* here rather than committed. The build output is hashed
+# per-chunk, so committing it would churn two megabytes of generated files on
+# every rebuild and make every frontend diff unreviewable. The cost is that
+# this stage is now load-bearing: unlike the previous optional intro bundle,
+# there is no CSS fallback, so a failure here must fail the image rather than
+# produce one that serves no UI.
+#
+# The Validation and Models pages import evaluation artifacts at build time,
+# which is what stops them drifting from the committed results -- so those
+# reports have to be present in this stage, not just the runtime one.
 # ---------------------------------------------------------------------------
 FROM node:22-slim AS frontend
 
-WORKDIR /build
-COPY frontend/intro/package.json frontend/intro/package-lock.json ./
+WORKDIR /build/frontend/site
+
+# Dependencies first, so a source edit does not invalidate the npm layer.
+COPY frontend/site/package.json frontend/site/package-lock.json ./
 RUN npm ci --no-audit --no-fund
-COPY frontend/intro/ ./
-COPY src/solaris/api/static/ /out/static/
-RUN npm run build || echo "frontend build failed; the CSS fallback will be used"
+
+COPY frontend/site/ ./
+COPY evals/reports/ /build/evals/reports/
+COPY ml/reports/ /build/ml/reports/
+COPY ml/artifacts/decomposition.manifest.json /build/ml/artifacts/
+
+RUN npm run build && npm run budget
 
 # ---------------------------------------------------------------------------
 # Stage 2: python dependencies
@@ -35,7 +50,12 @@ ENV PATH="/opt/venv/bin:$PATH"
 # the dependency layer.
 COPY pyproject.toml README.md LICENSE ./
 COPY src/solaris/__init__.py src/solaris/__init__.py
-RUN pip install --no-cache-dir ".[physics]"
+# physics for the pvlib engine, firestore for the persistent cache tier and
+# the shared call budget. Without the firestore extra the runbook's
+# SOLARIS_CACHE_BACKEND=firestore would degrade to memory-only -- reported
+# through /api/config, but still not what the deploy asked for, and the shared
+# budget would quietly become per-instance.
+RUN pip install --no-cache-dir ".[physics,firestore]"
 
 # ---------------------------------------------------------------------------
 # Stage 3: runtime
@@ -56,8 +76,9 @@ COPY --from=deps /opt/venv /opt/venv
 COPY --chown=solaris:solaris src/ ./src/
 COPY --chown=solaris:solaris pyproject.toml README.md LICENSE ./
 
-# The built bundle, if stage 1 produced one.
-COPY --from=frontend --chown=solaris:solaris /out/static/ ./src/solaris/api/static/
+# The built site. Vite writes into the package's static directory, so this
+# lands exactly where the app's StaticFiles mount expects it.
+COPY --from=frontend --chown=solaris:solaris /build/src/solaris/api/static/ ./src/solaris/api/static/
 
 # Committed reference data, so the eval harness runs inside the container.
 COPY --chown=solaris:solaris evals/references/ ./evals/references/

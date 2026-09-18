@@ -15,9 +15,13 @@ node_modules
 frontend/node_modules
 tests
 docs
-reports
-evals/reports
 notebooks
+
+# evals/reports and ml/reports are NOT excluded: the frontend build imports
+# them as JSON so the Validation and Models pages cannot drift from the
+# committed results. Excluding them here made the image build fail at the Vite
+# resolve step -- which is the correct failure, since a site built without them
+# would be a site showing no evidence.
 *.md
 !README.md
 .env

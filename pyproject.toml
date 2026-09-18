@@ -46,6 +46,14 @@ ml = [
   "joblib>=1.4,<2",
   "pyarrow>=17,<22",
 ]
+# The persistent cache tier and the shared Earth Engine budget counter.
+# Optional so a local run needs no Google Cloud client library at all: without
+# it the cache degrades to memory-only and says so through /api/config, rather
+# than failing. solaris.core.firestore_cache names this extra in its error
+# message, so the name here is part of that contract.
+firestore = [
+  "google-cloud-firestore>=2.19,<3",
+]
 # Validation harness: the ml stack plus reference-API access.
 evals = [
   "solaris[ml]",
