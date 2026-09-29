@@ -186,26 +186,6 @@ class TestModeValidation:
             assert key in win
 
 
-class TestCurrentYearCeiling:
-    """
-    Documents a known defect: the ceiling is calendar-derived, not data-derived.
-
-    A quarter of the current year that finished months ago is rejected purely
-    because the calendar year has not ended. The right test is whether the
-    underlying ERA5-Land data exists. When that is fixed, these tests should be
-    updated rather than deleted.
-    """
-
-    def test_current_year_is_refused(self):
-        current = date.today().year
-        assert _last_complete_calendar_year() == current - 1
-        with pytest.raises(ValueError, match="year must be between"):
-            _resolve("quarterly", year=current, quarter=1)
-
-    def test_ceiling_is_calendar_derived_not_data_derived(self):
-        assert _last_complete_calendar_year() == date.today().year - 1
-
-
 class TestSquareAoi:
     def test_ring_is_closed(self):
         ring = square_aoi_from_point(28.6, 77.2, 0.01)

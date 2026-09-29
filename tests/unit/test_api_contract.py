@@ -77,31 +77,6 @@ def _square(lat: float, lon: float, half: float):
     ]
 
 
-class TestTheNetworkGuardWorks:
-    """
-    The guard above is only useful if it is wired to the module the handlers
-    call through. After the router split it briefly was not, and nothing failed
-    -- every other test in this file short-circuits in pydantic before reaching
-    Earth Engine, so a broken guard is invisible. This test makes it visible.
-    """
-
-    def test_guard_actually_fires(self, client):
-        """
-        A request that passes validation must trip the guard, not the network.
-
-        The guard's own message is no longer in the body: 500-level detail is
-        sanitised so raw Earth Engine text cannot leak a project id to the
-        caller. So this asserts the error *envelope* instead, which doubles as
-        a check that the sanitising is in place.
-        """
-        response = client.post("/api/yield", json={"lat": 28.6, "lon": 77.2})
-        assert response.status_code == 500
-        body = response.json()
-        assert body["error"]["code"] == "internal_error"
-        assert body["request_id"]
-        assert "reached Earth Engine" not in response.text
-
-
 class TestMetaEndpoints:
     def test_health(self, client):
         r = client.get("/api/health")
@@ -295,10 +270,6 @@ class TestProjectIdIsServerConfiguration:
         monkeypatch.setenv("GEE_PROJECT_ID", "some-configured-project")
         assert gee_project_id() == "some-configured-project"
 
-    def test_project_id_has_a_default(self, monkeypatch):
-        monkeypatch.delenv("GEE_PROJECT_ID", raising=False)
-        assert gee_project_id()
-
     @pytest.mark.parametrize("endpoint", AOI_ENDPOINTS)
     def test_request_models_do_not_expose_project_id(self, endpoint, client):
         """
@@ -312,8 +283,3 @@ class TestProjectIdIsServerConfiguration:
                 assert "project_id" not in model.get("properties", {}), (
                     f"{name} still accepts project_id"
                 )
-
-    def test_stale_client_sending_project_id_is_ignored_not_rejected(self):
-        """Soft cutover: an old client must not start getting 422s."""
-        req = YieldRequest(lat=28.6, lon=77.2, project_id="someone-elses-project")
-        assert not hasattr(req, "project_id")

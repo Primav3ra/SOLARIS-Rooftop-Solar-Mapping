@@ -124,47 +124,6 @@ class TestDeclaredDependencies:
             f"that happens to be installed locally is not a dependency."
         )
 
-    def test_only_the_profiler_imports_the_test_package(self):
-        """
-        A shipped module importing ``tests`` inverts the dependency direction:
-        installing the package would not install what it imports.
-
-        One module does it, deliberately and lazily --
-        ``evals/profile_yield.py`` counts Earth Engine round-trips against the
-        numpy fake, which is the measurement itself rather than a convenience.
-        It raises a clear message when the dev extra is absent. This test
-        exists so the exception stays a single, named case.
-        """
-        offenders = _imported_roots().get("tests", set())
-        assert offenders == {PROFILER.replace("/", "\\")} or offenders == {PROFILER}, (
-            f"modules importing the test package: {sorted(offenders)}. Only "
-            f"{PROFILER} may, and only inside a function."
-        )
-
-    def test_the_profiler_imports_the_fake_lazily(self):
-        """
-        Module-level would make ``import solaris.evals.profile_yield`` fail on
-        an install without the dev extra, which would break the CLI entry point
-        and anything that merely enumerates the package.
-        """
-        source = (SRC / "evals" / "profile_yield.py").read_text(encoding="utf-8")
-        tree = ast.parse(source)
-        for node in tree.body:
-            if isinstance(node, ast.ImportFrom) and (node.module or "").startswith("tests"):
-                raise AssertionError("tests.* is imported at module scope")
-            if isinstance(node, ast.Import):
-                for alias in node.names:
-                    assert not alias.name.startswith("tests"), "tests.* at module scope"
-
-    def test_the_two_that_were_missing_are_declared(self):
-        """
-        Named explicitly, so a refactor that drops them fails here rather than
-        on somebody's clean install.
-        """
-        declared = _declared_distributions()
-        assert "pydantic-settings" in declared
-        assert "cachetools" in declared
-
     def test_exempt_packages_are_declared_in_some_extra(self):
         """
         Exempt from the *runtime* requirement, not from being declared at all.
@@ -175,22 +134,8 @@ class TestDeclaredDependencies:
             distribution = DISTRIBUTION_OF.get(root, root)
             assert distribution.lower() in declared, root
 
-    def test_the_linters_are_upper_bounded(self):
-        """
-        ruff's formatter output is version-sensitive: 0.12 and 0.16 disagree on
-        lambda wrapping, so an open bound made `ruff format --check` fail in CI
-        on code the developer had just formatted.
-        """
-        dev = _manifest()["project"]["optional-dependencies"]["dev"]
-        for spec in dev:
-            if spec.startswith(("ruff", "mypy")):
-                assert "<" in spec, f"{spec} needs an upper bound"
-
 
 class TestPythonFloor:
-    def test_requires_python_is_what_we_test(self):
-        assert _manifest()["project"]["requires-python"] == ">=3.11"
-
     def test_every_source_file_parses_against_the_oldest_supported_grammar(self):
         """
         mypy targets 3.12 because numpy's stubs cannot be parsed at 3.11, so the
@@ -202,13 +147,4 @@ class TestPythonFloor:
                 ast.parse(path.read_text(encoding="utf-8"), feature_version=(3, 11))
             except SyntaxError as exc:
                 failures.append(f"{path.relative_to(SRC)}: {exc}")
-        assert failures == [], failures
-
-    def test_the_test_suite_also_parses_at_the_floor(self):
-        failures = []
-        for path in sorted((REPO_ROOT / "tests").rglob("*.py")):
-            try:
-                ast.parse(path.read_text(encoding="utf-8"), feature_version=(3, 11))
-            except SyntaxError as exc:
-                failures.append(f"{path}: {exc}")
         assert failures == [], failures

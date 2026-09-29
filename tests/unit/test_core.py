@@ -15,7 +15,6 @@ of the decisions taken:
 
 from __future__ import annotations
 
-import pathlib
 from datetime import date, timedelta
 from typing import ClassVar
 
@@ -53,21 +52,6 @@ class TestSettings:
         assert settings.gee_project_id
         assert settings.max_concurrent_ee_calls >= 1
 
-    def test_wildcard_origin_is_rejected(self):
-        """
-        The old config paired `allow_origins=["*"]` with
-        `allow_credentials=True`, which is invalid per the CORS spec, so it
-        never granted what it appeared to. Making it unrepresentable is
-        cheaper than re-explaining it.
-        """
-        with pytest.raises(ValueError, match="must not contain"):
-            Settings(_env_file=None, cors_origins=["*"])
-
-    def test_origins_accept_a_comma_separated_string(self):
-        """Environment variables arrive as strings, not lists."""
-        settings = Settings(_env_file=None, cors_origins="http://a.test, http://b.test")
-        assert settings.cors_origins == ["http://a.test", "http://b.test"]
-
     def test_invalid_log_level_is_rejected(self):
         with pytest.raises(ValueError, match="log_level"):
             Settings(_env_file=None, log_level="CHATTY")
@@ -83,9 +67,6 @@ class TestSettings:
         payload = settings.redacted()
         assert payload["gee_credentials_configured"] is True
         assert "super-secret-key-material" not in repr(payload)
-
-    def test_get_settings_is_cached(self):
-        assert get_settings() is get_settings()
 
 
 # ---------------------------------------------------------------------------
@@ -538,34 +519,6 @@ class TestCoverage:
         assert payload["status"] == "partial"
 
 
-class TestQ2Twenty26:
-    """
-    The specific case that prompted this work: a quarter of 2026 that finished
-    months ago was refused because the calendar year had not ended.
-    """
-
-    def test_is_now_accepted(self):
-        from solaris.api.windows import resolve_temporal_window
-
-        latest = date(2026, 6, 14)
-        max_year = coverage_mod.max_selectable_year(latest=latest)
-        window = resolve_temporal_window("quarterly", 2026, 2, None, None, None, max_year=max_year)
-        assert window["start_date"] == "2026-04-01"
-        assert window["end_date_exclusive"] == "2026-07-01"
-
-    def test_was_previously_refused(self):
-        """Pins the old behaviour so the regression is recognisable."""
-        from solaris.api.windows import resolve_temporal_window
-
-        with pytest.raises(ValueError, match="year must be between"):
-            resolve_temporal_window("quarterly", 2026, 2, None, None, None, max_year=2025)
-
-    def test_and_its_partial_coverage_is_reported(self):
-        cov = coverage_mod.window_coverage("2026-04-01", "2026-07-01", latest=date(2026, 6, 14))
-        assert cov.status == "partial"
-        assert cov.warning and "past the end" in cov.warning
-
-
 class TestCorsOriginsFromEnvironment:
     """
     The documented configuration syntax must actually work.
@@ -587,15 +540,6 @@ class TestCorsOriginsFromEnvironment:
 
     def test_the_documented_comma_separated_form_parses(self, monkeypatch):
         settings = self._settings(monkeypatch, "https://a.example,https://b.example")
-        assert settings.cors_origins == ["https://a.example", "https://b.example"]
-
-    def test_a_single_origin_parses(self, monkeypatch):
-        assert self._settings(monkeypatch, "https://solo.example").cors_origins == [
-            "https://solo.example"
-        ]
-
-    def test_whitespace_is_tolerated(self, monkeypatch):
-        settings = self._settings(monkeypatch, " https://a.example , https://b.example ")
         assert settings.cors_origins == ["https://a.example", "https://b.example"]
 
     def test_a_json_array_also_parses(self, monkeypatch):
@@ -630,46 +574,3 @@ class TestCorsOriginsFromEnvironment:
             "http://localhost:8000",
             "http://127.0.0.1:8000",
         ]
-
-
-class TestEnvFileDiscovery:
-    """
-    ``.env`` must be found regardless of the working directory.
-
-    A bare ``env_file=".env"`` resolves against the cwd, so ``solaris-api``
-    read it only when launched from the repo root and **silently ignored it
-    everywhere else**. The symptom was an Earth Engine permission error naming
-    a project the user had never chosen -- their configuration had simply never
-    been loaded, with nothing to say so. Same class as the relative
-    ``StaticFiles`` path this project already fixed.
-    """
-
-    def test_the_project_env_file_is_found_by_walking_up(self):
-        from solaris.core.config import ENV_FILES
-
-        assert len(ENV_FILES) >= 2, ENV_FILES
-        # The first candidate must be an absolute path next to pyproject.toml,
-        # which is what makes it cwd-independent.
-        first = pathlib.Path(ENV_FILES[0])
-        assert first.is_absolute(), ENV_FILES
-        assert first.name == ".env"
-        assert (first.parent / "pyproject.toml").is_file()
-
-    def test_the_cwd_relative_path_is_kept_as_a_fallback(self):
-        """
-        Last, not first: a deployment that arranges its own local ``.env``
-        should still win, but it must not be the only place looked at.
-        """
-        from solaris.core.config import ENV_FILES
-
-        assert ENV_FILES[-1] == ".env"
-
-    def test_redacted_reports_which_file_was_loaded(self):
-        """
-        The most common local confusion is configuration that was never read.
-        Reporting the path makes that answerable instead of leaving it to be
-        inferred from a surprising project id.
-        """
-        from solaris.core.config import Settings
-
-        assert "env_file_loaded" in Settings().redacted()

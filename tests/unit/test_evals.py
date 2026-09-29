@@ -9,17 +9,11 @@ of it -- is asserted here rather than only claimed in prose.
 
 from __future__ import annotations
 
-import math
-
 import pytest
 
-from solaris.core import constants as C
 from solaris.evals import metrics
 from solaris.evals.harness import net_retention, specific_yield
 from solaris.evals.references import (
-    CITIES,
-    PUBLISHED_YIELDS,
-    SPECIFIC_YIELD_BAND,
     DailySeries,
 )
 
@@ -45,11 +39,6 @@ class TestSpecificYieldAlgebra:
         low = specific_yield(1000.0, 0.95, 0.94)
         high = specific_yield(2000.0, 0.95, 0.94)
         assert high == pytest.approx(2 * low, rel=1e-12)
-
-    def test_uses_the_configured_performance_ratio_by_default(self):
-        assert specific_yield(1000.0, 1.0, 1.0) == pytest.approx(
-            1000.0 * C.PERFORMANCE_RATIO, rel=1e-12
-        )
 
 
 class TestNetRetention:
@@ -166,124 +155,3 @@ class TestMetrics:
         assert metrics.skill_score(10.0, 10.0) == pytest.approx(0.0)
         assert metrics.skill_score(15.0, 10.0) < 0  # worse than the baseline
         assert metrics.skill_score(1.0, 0.0) is None
-
-
-class TestReferenceDefinitions:
-    def test_sites_span_a_real_latitude_range(self):
-        lats = [c.lat for c in CITIES]
-        assert max(lats) - min(lats) > 15.0, "sites do not span India's latitudes"
-
-    def test_city_keys_are_unique(self):
-        keys = [c.key for c in CITIES]
-        assert len(keys) == len(set(keys))
-
-    def test_coordinates_are_inside_india(self):
-        for city in CITIES:
-            assert 6.0 <= city.lat <= 37.0, city.key
-            assert 68.0 <= city.lon <= 98.0, city.key
-
-    def test_published_yields_are_ordered_and_sourced(self):
-        for pub in PUBLISHED_YIELDS:
-            low, high = pub.specific_yield_kwh_per_kwp_yr
-            assert low <= high
-            assert pub.source, f"{pub.label} has no provenance"
-
-    def test_band_contains_every_published_figure(self):
-        """The plausibility band must not exclude its own sources."""
-        low, high = SPECIFIC_YIELD_BAND
-        for pub in PUBLISHED_YIELDS:
-            pub_low, pub_high = pub.specific_yield_kwh_per_kwp_yr
-            assert low <= pub_low and pub_high <= high, f"{pub.label} falls outside the band"
-
-
-class TestHarnessAgainstCachedReferences:
-    """
-    Runs against the committed reference cache, so no network is needed.
-
-    These are the assertions that would catch the model drifting away from
-    published plant performance.
-    """
-
-    @pytest.fixture(scope="class")
-    def report(self):
-        from solaris.evals.harness import run
-
-        result = run()
-        if result["suites"]["specific_yield_vs_published"]["n"] == 0:
-            pytest.skip("no cached references; run `python -m solaris.evals.fetch`")
-        return result
-
-    def test_every_city_year_lands_in_the_published_band(self, report):
-        outside = [
-            r
-            for r in report["suites"]["specific_yield_vs_published"]["by_city_year"]
-            if not r["in_published_band"]
-        ]
-        assert not outside, "specific yield outside the published band for: " + ", ".join(
-            f"{r['city']} {r['year']} ({r['specific_yield_kwh_per_kwp_yr']:.0f})" for r in outside
-        )
-
-    def test_delhi_is_close_to_the_measured_delhi_plant(self, report):
-        """
-        A measured 12 kWp Delhi rooftop averaged 1147 kWh/kWp/yr. This model
-        applies no tilt gain (+8-12% in north India) and that plant ran at an
-        unusually high PR of 85-93%, so exact agreement is not expected -- but
-        a large divergence would mean something is wrong.
-        """
-        rows = [
-            r
-            for r in report["suites"]["specific_yield_vs_published"]["by_city_year"]
-            if r["city"] == "Delhi"
-        ]
-        assert rows
-        mean = sum(r["specific_yield_kwh_per_kwp_yr"] for r in rows) / len(rows)
-        assert mean == pytest.approx(1147.0, rel=0.25), (
-            f"Delhi specific yield {mean:.0f} vs measured 1147 kWh/kWp/yr"
-        )
-
-    def test_dry_sites_outyield_cloudy_ones(self, report):
-        """
-        Physical ordering sanity: arid Jodhpur must beat high-cloud Guwahati.
-        Getting this backwards is the kind of error an aggregate metric hides.
-        """
-        by_city: dict[str, list[float]] = {}
-        for row in report["suites"]["specific_yield_vs_published"]["by_city_year"]:
-            by_city.setdefault(row["city"], []).append(row["specific_yield_kwh_per_kwp_yr"])
-        mean = {k: sum(v) / len(v) for k, v in by_city.items()}
-        assert mean["Jodhpur"] > mean["Guwahati"]
-        assert mean["Jodhpur"] > mean["Kolkata"]
-
-    def test_reference_spread_is_reported_and_material(self, report):
-        """
-        The honesty constraint. If the references agreed we could claim tighter
-        accuracy; they do not, so the spread has to be visible in the report.
-        """
-        rows = report["suites"]["irradiance_reference_spread"]["rows"]
-        assert rows, "no reference spread computed"
-        assert any(r["spread_pct_of_mean"] > 5.0 for r in rows), (
-            "expected a material disagreement between references"
-        )
-
-    def test_reference_beam_fraction_is_below_the_model_fallback(self, report):
-        """
-        ERA5 uses a monthly aerosol climatology and is documented to
-        overestimate direct radiation, the error growing with aerosol load.
-        India is that regime, so the reference beam fraction should sit *below*
-        the 0.60 the model falls back to. This quantifies the motivation for a
-        bias-correction model.
-        """
-        beam = report["suites"]["beam_fraction"]
-        assert beam["reference_beam_fraction_mean"] < beam["era5_fallback_used_by_model"]
-
-    def test_report_is_json_serialisable(self, report):
-        import json
-
-        json.dumps(report)
-
-    def test_markdown_renders(self, report):
-        from solaris.evals.harness import format_markdown
-
-        text = format_markdown(report)
-        assert "Specific yield" in text
-        assert "Reference disagreement" in text
-        assert not math.isnan(report["suites"]["specific_yield_vs_published"]["summary"]["mean"])

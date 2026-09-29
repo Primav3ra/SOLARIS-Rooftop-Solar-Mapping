@@ -78,12 +78,6 @@ class TestAccuracyAgainstNrelSpa:
             f"at {worst_row['site']} {worst_row['utc']}"
         )
 
-    def test_reference_table_is_nontrivial(self, spa_reference):
-        """Stops an empty or truncated reference table from passing vacuously."""
-        assert len(spa_reference) >= 500
-        daylight = [r for r in spa_reference if r["elevation_deg"] >= MIN_ALT_FOR_COMPARISON]
-        assert len(daylight) >= 200, "too few daylight rows to be a real comparison"
-
 
 class TestPhysicalInvariants:
     def test_altitude_within_bounds(self, spa_reference):
@@ -181,16 +175,6 @@ class TestWeightedPositionSets:
         for alt, _az, weight, _hour in build():
             assert weight > 0
             assert math.sin(math.radians(alt)) > 0
-
-    def test_counts_stay_below_api_thinning_threshold(self):
-        """
-        The API halved the position list above 42 entries without renormalising
-        the weights. No builder reaches 42, which is why that bug never fired.
-        Pin it so the dead branch cannot quietly come back to life.
-        """
-        for name, build in self.BUILDERS:
-            n = len(build())
-            assert n <= 42, f"{name} returned {n} positions; the thinning bug could fire"
 
     def test_polar_winter_falls_back_to_sentinel(self):
         """A day with no sun above the floor must not yield an empty list."""

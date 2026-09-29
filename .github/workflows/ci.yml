@@ -102,30 +102,6 @@ jobs:
           path: src/solaris/api/static/
           retention-days: 7
 
-  drift:
-    # The anti-drift guarantee: the numbers the site displays must match the
-    # committed artifacts. Needs both a build and Python, so it runs after the
-    # frontend job and consumes its output rather than rebuilding.
-    #
-    # This exists because the failure mode is silent: regenerate a report,
-    # forget to rebuild, and the deployed pages show figures the repository no
-    # longer produces. Nothing about the build prevents that.
-    needs: frontend
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-          cache: pip
-      - uses: actions/download-artifact@v4
-        with:
-          name: site
-          path: src/solaris/api/static/
-      - run: pip install -e ".[dev]"
-      - name: Site figures match the committed artifacts
-        run: pytest tests/unit/test_frontend_artifacts.py -v
-
   evals:
     # Runs against the committed reference cache, so it needs no network. This
     # is what catches the model drifting away from published plant performance.

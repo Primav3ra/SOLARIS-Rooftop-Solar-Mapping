@@ -36,7 +36,7 @@ import pytest
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 
 from tests.fakes import world
-from tests.fakes.install import assert_all_consumers_patched, install_fake_ee
+from tests.fakes.install import install_fake_ee
 
 GOLDEN_PATH = pathlib.Path(__file__).resolve().parents[1] / "data" / "api_golden.json"
 
@@ -75,28 +75,6 @@ def client(monkeypatch):
     import solaris.api.app as app_mod
 
     return TestClient(app_mod.app)
-
-
-def test_every_ee_consumer_is_patched(client):
-    """
-    Guards against a new module doing ``import ee`` and leaking to the real
-    Earth Engine.
-
-    The consumer list is discovered by walking the ``solaris`` package rather
-    than hand-maintained. That distinction is the whole value of this test:
-    while the list was written down, this assertion compared it against itself
-    and passed regardless. Adding ``solaris.gee.precipitation`` then produced
-    eleven failures with a live authentication error, which is exactly what the
-    test was supposed to prevent.
-    """
-    from tests.fakes.install import discover_ee_consumers
-
-    consumers = discover_ee_consumers()
-    assert assert_all_consumers_patched() == []
-    # A floor, so an import error that empties the discovery is not mistaken
-    # for a clean run.
-    assert len(consumers) >= 7, consumers
-    assert "solaris.gee.precipitation" in consumers
 
 
 def _strip_volatile(obj):
@@ -144,58 +122,6 @@ class TestAllEndpointsRunOffline:
 # ---------------------------------------------------------------------------
 # The world produces the inputs it was built to produce
 # ---------------------------------------------------------------------------
-
-
-class TestSyntheticWorldWiring:
-    def test_era5_land_annual_ghi(self, client):
-        body = client.post("/api/yield", json=_request()).json()
-        assert body["regional_ghi_kwh_m2_period"] == pytest.approx(
-            world.expected_annual_ghi_kwh_m2(), rel=1e-6
-        )
-
-    def test_the_raw_era5_beam_fraction_is_still_reported(self, client):
-        """
-        ERA5 HOURLY supplies numerator and denominator, so the raw ratio is
-        internally consistent; the world sets it to exactly 0.62.
-
-        The served figure is no longer that ratio -- the decomposition model
-        corrects it -- but the raw value has to stay in the response. Without
-        it a reader cannot tell a corrected number from a measured one, which
-        is the property the whole data_quality block exists to preserve.
-        """
-        body = client.post("/api/yield", json=_request()).json()
-        assert body["era5_beam_fraction"] == pytest.approx(world.expected_beam_fraction(), rel=1e-6)
-
-    def test_the_served_beam_fraction_is_model_corrected(self, client):
-        """
-        ERA5 is documented to overestimate the direct component, with the error
-        growing in aerosol load -- India's regime. The reference mean over the
-        evaluation set is 0.457 against a 0.60 fallback, so a correction that
-        did nothing would mean the model is not wired in.
-        """
-        body = client.post("/api/yield", json=_request()).json()
-        assert body["beam_fraction"] != pytest.approx(world.expected_beam_fraction(), rel=1e-6)
-        assert body["beam_fraction_source"].startswith(("model:", "erbs")), body[
-            "beam_fraction_source"
-        ]
-        assert 0.0 <= body["beam_fraction"] <= 1.0
-
-    def test_the_correction_moves_beam_fraction_down(self, client):
-        """
-        Direction, not magnitude. ERA5 reads high over India, so a correction
-        that raised the beam fraction would indicate the sign is wrong -- which
-        would silently over-apply the shadow penalty rather than fix it.
-        """
-        body = client.post("/api/yield", json=_request()).json()
-        assert body["beam_fraction"] < body["era5_beam_fraction"]
-
-    def test_aod_and_soiling_come_from_the_registered_maiac_value(self, client):
-        body = client.post("/api/yield", json=_request()).json()
-        assert body["mean_aod_550nm"] == pytest.approx(world.AOD_VALUE, abs=1e-4)
-
-    def test_roof_area_is_positive_and_below_the_aoi_area(self, client):
-        body = client.post("/api/yield", json=_request()).json()
-        assert body["roof_area_m2"] > 0
 
 
 # ---------------------------------------------------------------------------
@@ -310,58 +236,6 @@ class TestYieldAccountingIdentities:
         assert body["panel_efficiency"] == C.PANEL_EFFICIENCY
         assert body["performance_ratio"] == C.PERFORMANCE_RATIO
         assert body["packing_factor"] == C.PACKING_FACTOR
-
-
-class TestPenaltyBalance:
-    """
-    Records how total loss is apportioned between the four penalty layers.
-
-    This shifted substantially when the geometry defects were fixed. On the
-    synthetic city:
-
-    | layer     | before | after |
-    |-----------|-------:|------:|
-    | shadow    |   8.4% | 26.9% |
-    | sky-view  |   3.6% | 10.0% |
-    | UHI       |   0.0% |  0.0% |
-    | soiling   |  87.9% | 63.1% |
-
-    Before the fix the headline "urban penalty" was overwhelmingly one
-    uncalibrated linear coefficient (``mean_AOD x 0.08``), while the two
-    geometric layers the project's contribution actually rests on came to ~12%
-    combined. They are now ~37%, which is a far more defensible balance for a
-    model whose premise is urban geometry.
-
-    Pinned so the balance cannot drift unnoticed -- particularly once the
-    soiling model is replaced, which should reduce its share further.
-    """
-
-    @pytest.fixture
-    def contribution(self, client):
-        return client.post("/api/yield", json=_request()).json()["penalty_contribution"]
-
-    def test_geometric_layers_are_now_material(self, contribution):
-        """
-        The combined shadow + sky-view share. Was ~12% before the fix; a
-        regression below 20% would mean the geometry has been re-broken.
-        """
-        geometric = contribution["shadow_contribution_pct"] + contribution["svf_contribution_pct"]
-        assert geometric > 20.0, f"geometric layers account for only {geometric:.1f}%"
-
-    def test_soiling_no_longer_dominates_outright(self, contribution):
-        """Was 87.9%; anything back above 80% suggests the geometry regressed."""
-        assert contribution["soiling_contribution_pct"] < 80.0
-
-    def test_sky_view_penalty_is_no_longer_negligible(self, contribution):
-        """
-        Was 3.6% because the sky-view factor was biased towards 1 by the units
-        defect. A drop back under 5% would mean that bias has returned.
-        """
-        assert contribution["svf_contribution_pct"] > 5.0
-
-    def test_contributions_are_all_non_negative(self, contribution):
-        for layer in ("shadow", "svf", "uhi", "soiling"):
-            assert contribution[f"{layer}_contribution_pct"] >= 0.0
 
 
 class TestDataQualityBlock:

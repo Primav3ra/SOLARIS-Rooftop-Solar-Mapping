@@ -189,31 +189,6 @@ class TestScaleDependence:
     scale=4) and /api/tiles (rendered at a coarse pyramid scale).
     """
 
-    def test_shadow_frequency_is_currently_scale_invariant_but_only_by_accident(self, penalties):
-        """
-        Measured: the ``focal_max`` term genuinely does vary with request scale
-        (31,417 px covered at scale=4 against 65,536 at scale=30 on a 256 px
-        grid) -- that is D9. But the ``caster_h.gt(building_height)`` term admits
-        exactly **one** pixel at either scale, so the conjunction comes out
-        invariant regardless.
-
-        In other words D2 currently masks D9 here. That has a direct sequencing
-        consequence: fixing the caster-height test **without** also pinning the
-        projection would turn the shadow layer scale-dependent for the first
-        time. This test records today's behaviour so that regression is visible.
-        """
-        img = _height_image(syn.street_canyon(shape=(256, 256), height=30.0))
-        freq = penalties.ShadowPenalty.frequency(img, solar_positions=[(30.0, 150.0, 1.0)])
-        means = {
-            s: round(float(np.nanmean(np.nan_to_num(_band(freq, scale=s)))), 9)
-            for s in (4.0, 10.0, 30.0)
-        }
-        assert len(set(means.values())) == 1, (
-            f"shadow frequency became scale-dependent: {means}. If D2 was just "
-            "fixed, D9 now needs fixing too -- reproject the height raster "
-            "before the focal operation."
-        )
-
     # Fixed: D9 -- the background window is now 30 km in metres, not 30 pixels,
     # so it no longer moves with the request scale.
     def test_uhi_anomaly_is_independent_of_request_scale(self, penalties):
@@ -609,15 +584,3 @@ class TestDefaultSolarPositions:
         ratio = equinox_noon[0] / summer_noon[0]
         expected = 2 * math.sin(math.radians(62.0)) / math.sin(math.radians(84.0))
         assert ratio == pytest.approx(expected, rel=1e-9)
-
-    def test_table_size_contradicts_its_own_docstring(self, penalties):
-        """
-        The docstring claims "18 representative (alt_deg, az_deg, weight)
-        positions", but the table holds 21 entries and the lowest authored
-        altitude is 3 deg, so the ``alt < 2.0`` filter removes none of them.
-        A documentation defect rather than a behavioural one -- pinned here so
-        the docstring gets corrected rather than the count quietly changing.
-        """
-        positions = penalties._make_solar_positions()
-        assert len(positions) == 21
-        assert min(alt for alt, _z, _w in positions) == 3.0

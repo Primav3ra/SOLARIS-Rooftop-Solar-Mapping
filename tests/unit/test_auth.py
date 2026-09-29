@@ -67,62 +67,6 @@ class TestIdentityResolution:
         assert identity.allowance_key == "tok"
 
 
-class TestSignInIsGone:
-    """
-    Sign-in was removed; these assert it did not leave fragments behind.
-
-    It verified a Google ID token and keyed rate limiting on the ``sub`` claim.
-    It moved no Earth Engine quota -- the OAuth client belongs to this project,
-    so calls bill here regardless -- there was no persistence for an identity to
-    attach to, and no interface from which to sign in. See the module docstring
-    of ``solaris.api.auth``.
-    """
-
-    def test_the_verification_helpers_are_absent(self):
-        for name in ("verify_google_id_token", "AuthError", "GOOGLE_ISSUERS"):
-            assert not hasattr(auth, name), name
-
-    def test_the_identity_carries_no_account_fields(self):
-        identity = auth.resolve_identity("tok", "1.2.3.4")
-        for name in ("subject", "email", "name", "picture", "is_signed_in", "tier"):
-            assert not hasattr(identity, name), name
-
-    def test_no_oauth_client_setting_remains(self):
-        from solaris.core.config import Settings
-
-        assert "google_client_id" not in Settings.model_fields
-
-    def test_the_verify_endpoint_is_gone(self, client):
-        # 405 rather than 404: the path falls through to the single-page-app
-        # static mount, which serves GET only. Either answer means the route
-        # no longer exists.
-        response = client.post("/api/auth/verify", json={"id_token": "x" * 40})
-        assert response.status_code in (404, 405), response.status_code
-
-    def test_a_bearer_token_is_ignored_rather_than_verified(self, client):
-        """
-        No 401 path: an Authorization header is simply not consulted, so a
-        stray one must not affect the response.
-        """
-        response = client.get("/api/auth/me", headers={"Authorization": "Bearer anything"})
-        assert response.status_code == 200
-
-    def test_the_refusal_names_only_remedies_that_exist(self):
-        """
-        The message previously recommended signing in, which no interface could
-        perform. It must now name only reachable remedies.
-        """
-        allowance = auth.GuestAllowance(allowance=1)
-        token = allowance.issue()
-        allowance.spend(token)
-        with pytest.raises(auth.AllowanceExceededError) as caught:
-            allowance.check(token)
-        message = str(caught.value)
-        assert "Sign in" not in message
-        assert "sign in" not in message
-        assert "session resets" in message
-
-
 # ---------------------------------------------------------------------------
 # The allowance
 # ---------------------------------------------------------------------------

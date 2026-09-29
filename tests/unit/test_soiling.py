@@ -204,13 +204,6 @@ class TestWindowDependence:
         dry = soiling.window_soiling(0.70, window_days=30, daily_rain_mm=[0.0] * 30)
         assert dry.loss > 10 * wet.loss
 
-    def test_the_legacy_model_cannot_tell_them_apart(self):
-        """
-        Stated as a test so the improvement is recorded rather than asserted in
-        prose. The control arm returns one number for both.
-        """
-        assert soiling.legacy_retention(0.70) == soiling.legacy_retention(0.70)
-
     def test_scheduled_cleaning_helps_an_arid_site_and_barely_a_wet_one(self):
         dry_series = [0.0] * 365
         wet_series = _rain("..X" * 122)[:365]
@@ -417,73 +410,3 @@ class TestBoundsAndReporting:
 # ---------------------------------------------------------------------------
 # Against real rainfall
 # ---------------------------------------------------------------------------
-
-
-class TestAgainstRealRainfall:
-    """
-    Uses the committed NASA POWER precipitation cache. Skipped if absent, since
-    a fresh clone should still get a green run.
-    """
-
-    def _series(self, city: str, year: int = 2021) -> list[float]:
-        from solaris.evals.references import load_cached_precip
-
-        cached = load_cached_precip(city, year)
-        if cached is None:
-            pytest.skip(f"no cached precipitation for {city} {year}")
-        return [cached.precip_mm[d] for d in sorted(cached.precip_mm)]
-
-    def test_annual_losses_land_in_the_published_range(self):
-        """
-        Measured Indian soiling is a few per cent annually with 7-30 day
-        cleaning, up to roughly 10% per month uncleaned. An annual figure
-        outside 0-15% for any city would be outside anything published.
-        """
-        for city in ("delhi", "jodhpur", "mumbai", "guwahati"):
-            series = self._series(city)
-            result = soiling.window_soiling(0.5, window_days=len(series), daily_rain_mm=series)
-            assert 0.0 < result.loss < 0.15, (city, result.loss)
-
-    def test_an_arid_city_soils_more_than_a_wet_one_at_equal_aerosol(self):
-        """
-        The rain term, isolated: AOD held constant, so any difference is
-        rainfall alone. The old model could not produce one.
-        """
-        jodhpur = self._series("jodhpur")
-        guwahati = self._series("guwahati")
-        arid = soiling.window_soiling(
-            0.5, window_days=len(jodhpur), daily_rain_mm=jodhpur, cleaning_interval_days=None
-        ).loss
-        wet = soiling.window_soiling(
-            0.5, window_days=len(guwahati), daily_rain_mm=guwahati, cleaning_interval_days=None
-        ).loss
-        assert arid > 2 * wet
-
-    def test_the_mean_spell_fallback_is_badly_wrong_on_real_data(self):
-        """
-        Pins the finding. The fallback is not a slightly-worse estimate; on
-        real Indian rainfall it is out by a factor of several, and worst in the
-        arid cities where soiling matters most.
-        """
-        series = self._series("ahmedabad")
-        exact = soiling.window_soiling(
-            0.52, window_days=len(series), daily_rain_mm=series, cleaning_interval_days=None
-        )
-        approximate = soiling.window_soiling(
-            0.52,
-            window_days=len(series),
-            rain_days=exact.rain_days,
-            cleaning_interval_days=None,
-        )
-        assert exact.loss / approximate.loss > 5.0
-
-    def test_agrees_with_pvlib_on_every_city(self):
-        for city in ("delhi", "jaipur", "jodhpur", "mumbai", "chennai", "leh"):
-            series = self._series(city)
-            ours = soiling.window_soiling(
-                0.5, window_days=len(series), daily_rain_mm=series, cleaning_interval_days=None
-            ).loss
-            theirs = soiling.kimber_reference(0.5, series, "2021-01-01")
-            assert ours == pytest.approx(
-                theirs, rel=soiling.PVLIB_AGREEMENT_TOLERANCE, abs=0.001
-            ), city

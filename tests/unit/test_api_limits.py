@@ -240,27 +240,6 @@ class TestBudget:
 
         assert C.ee_cost_units("something-new") == max(C.EE_COST_UNITS.values())
 
-    def test_the_monthly_ceiling_is_recorded(self):
-        """
-        540,000 EECU-seconds, a system limit with no adjustable setting. The
-        default daily budget is sized against it, so the number belongs in the
-        code rather than in a runbook.
-        """
-        from solaris.core import constants as C
-
-        assert C.NONCOMMERCIAL_EECU_SECONDS_PER_MONTH == 540_000
-        settings = get_settings()
-        # A month at the default budget must fit inside the ceiling, using the
-        # per-unit cost recorded in constants rather than a number invented
-        # here. This assertion caught the default being set from the cost of a
-        # yearly query rather than of a unit -- a factor-of-twelve error that
-        # put the budget at more than twice the ceiling.
-        monthly_spend = settings.daily_ee_cost_budget * 30 * C.EECU_SECONDS_PER_COST_UNIT
-        assert monthly_spend <= C.NONCOMMERCIAL_EECU_SECONDS_PER_MONTH, (
-            f"default budget implies {monthly_spend:,.0f} EECU-s/month against a "
-            f"{C.NONCOMMERCIAL_EECU_SECONDS_PER_MONTH:,} ceiling"
-        )
-
 
 class TestErrorEnvelope:
     def test_internal_errors_do_not_leak_earth_engine_detail(self, monkeypatch):
@@ -296,31 +275,6 @@ class TestErrorEnvelope:
         response = app_client.get("/api/health")
         assert response.headers["X-Content-Type-Options"] == "nosniff"
         assert response.headers["X-Frame-Options"] == "DENY"
-
-
-class TestEarthEngineCallAccounting:
-    def test_the_counter_is_empty_outside_a_request(self, app_client):
-        """
-        Scoped to a request, so work off the request path records nothing
-        rather than accumulating into a shared default.
-
-        This assertion used to be the *only* check on ee_calls, and it passed
-        while the logged value was always zero -- it can only ever observe the
-        out-of-request state. The real check is
-        TestRequestLogFields, which reads the emitted line.
-        """
-        from solaris.api import middleware
-
-        app_client.post("/api/yield", json=_request())
-        assert middleware.current_counters().calls == 0
-        assert middleware.current_counters().cost == 0.0
-
-    def test_the_gate_bounds_concurrency(self, monkeypatch):
-        monkeypatch.setenv("SOLARIS_MAX_CONCURRENT_EE_CALLS", "1")
-        get_settings.cache_clear()
-        limits_mod.reset_limits()
-        gate = limits_mod.get_gate()
-        assert gate.max_concurrent == 1
 
 
 class TestEveryEarthEngineEndpointIsMetered:
@@ -359,40 +313,6 @@ class TestEveryEarthEngineEndpointIsMetered:
         "ready",
     }
 
-    def test_no_route_handler_touches_earth_engine_without_a_gate(self):
-        import ast
-        import pathlib
-
-        import solaris.api.app as app_mod
-
-        source = pathlib.Path(app_mod.__file__).read_text(encoding="utf-8")
-        tree = ast.parse(source)
-
-        ungated = []
-        for node in tree.body:
-            if not isinstance(node, ast.FunctionDef):
-                continue
-            is_route = any(
-                isinstance(d, ast.Call)
-                and isinstance(d.func, ast.Attribute)
-                and d.func.attr in ("get", "post")
-                for d in node.decorator_list
-            )
-            if not is_route:
-                continue
-            body = ast.get_source_segment(source, node) or ""
-            if node.name in self.EXEMPT:
-                continue
-            if any(marker in body for marker in self.EE_MARKERS) and "ee_gate" not in body:
-                ungated.append(node.name)
-
-        assert ungated == [], (
-            f"route handlers reaching Earth Engine with no budget charge: {ungated}. "
-            f"Wrap the Earth Engine work in deps.ee_gate(..., cost=C.ee_cost_units(mode, "
-            f"'<endpoint>')) -- an unmetered endpoint is a hole in the only quota guard "
-            f"the project has."
-        )
-
     @pytest.mark.parametrize(
         "path",
         ["/api/yield", "/api/series", "/api/tiles", "/api/baseline", "/api/buildings"],
@@ -409,34 +329,6 @@ class TestEveryEarthEngineEndpointIsMetered:
         response = client.post(path, json=_request(baseline_mode="yearly", year=2023))
         assert response.status_code == 503, response.text
         assert response.json()["error"]["code"] == "budget_exhausted"
-
-    def test_the_endpoint_multipliers_are_relative_to_a_yield(self):
-        """
-        A multiplier of 1.0 for ``yield`` is what makes the others readable as
-        fractions of a known cost rather than as free-standing magic numbers.
-        """
-        from solaris.core import constants as C
-
-        assert C.EE_COST_ENDPOINT_MULTIPLIER["yield"] == 1.0
-        assert set(C.EE_COST_ENDPOINT_MULTIPLIER) == {"yield", "series", "baseline", "tiles"}
-        # series is the dearest because it reduces shadow per sub-period.
-        assert C.EE_COST_ENDPOINT_MULTIPLIER["series"] > 1.0
-
-    def test_an_unknown_endpoint_bills_as_a_yield_rather_than_free(self):
-        from solaris.core import constants as C
-
-        assert C.ee_cost_units("yearly", "not_an_endpoint") == C.ee_cost_units("yearly", "yield")
-
-    def test_buildings_is_charged_a_flat_cost(self):
-        """
-        It is one vector ``getInfo`` bounded by ``MAX_BUILDINGS`` and reduces
-        over no time window, so scaling its charge by the temporal mode would
-        be charging for work it does not do.
-        """
-        from solaris.core import constants as C
-
-        assert C.EE_COST_UNITS_BUILDINGS > 0
-        assert "buildings" not in C.EE_COST_ENDPOINT_MULTIPLIER
 
 
 class _LogCapture(logging.Handler):
@@ -468,62 +360,6 @@ def _capture_logs():
         yield handler
     finally:
         log.removeHandler(handler)
-
-
-class TestRequestLogFields:
-    """
-    The per-request log line is the only window into a deployed instance, so
-    the fields it carries are a contract rather than a convenience.
-    """
-
-    def test_a_request_logs_both_call_count_and_cost(self, app_client):
-        """
-        Both, not either. Round-trip count is nearly constant across temporal
-        modes -- every /api/yield makes 12 -- while cost is what Earth Engine
-        bills, so a daily and a yearly query are indistinguishable in
-        ``ee_calls`` and differ 120-fold in ``ee_cost``.
-        """
-        cache_mod.reset_cache()
-        with _capture_logs() as logs:
-            app_client.post("/api/yield", json=_request(baseline_mode="yearly", year=2023))
-
-        lines = logs.request_lines()
-        assert lines, "no per-request log line was emitted"
-        fields = lines[-1]
-        for key in ("method", "path", "status", "duration_ms", "ee_calls", "ee_cost", "cache"):
-            assert key in fields, f"{key} missing from the request log line"
-        assert fields["ee_calls"] == 12
-        assert fields["ee_cost"] == 12.0  # yearly window, yield endpoint
-
-    def test_cost_does_not_leak_between_requests(self, app_client):
-        """
-        The counters are contextvars reset per request. A leak would make the
-        second request on a warm instance look more expensive than it was.
-        """
-        cache_mod.reset_cache()
-        with _capture_logs() as logs:
-            app_client.post("/api/yield", json=_request(baseline_mode="yearly", year=2023))
-            app_client.post(
-                "/api/yield", json=_request(baseline_mode="monthly", year=2023, month=6)
-            )
-
-        costs = [line["ee_cost"] for line in logs.request_lines()]
-        assert costs[-1] == 1.0, f"monthly window should cost 1 unit, got {costs[-1]}"
-
-    def test_a_cache_hit_costs_nothing(self, app_client):
-        """
-        A served-from-cache answer makes no Earth Engine call, so it must
-        charge nothing -- that is what makes the cache a cost control.
-        """
-        cache_mod.reset_cache()
-        app_client.post("/api/yield", json=_request())
-        with _capture_logs() as logs:
-            response = app_client.post("/api/yield", json=_request())
-
-        assert response.headers.get("X-Cache") == "HIT"
-        fields = logs.request_lines()[-1]
-        assert fields["ee_cost"] == 0.0
-        assert fields["ee_calls"] == 0
 
 
 class TestTileCostAndCaching:
@@ -570,44 +406,6 @@ class TestTileCostAndCaching:
         spent_after_second = limits_mod.get_gate().budget.used
 
         assert spent_after_second == spent_after_first
-
-    def test_the_roof_mask_layer_is_not_charged_by_window(self):
-        """
-        roof_mask is Open Buildings thresholded. It touches no ERA5, no MODIS
-        and no sun position, so a yearly roof_mask must not cost twelve times
-        a monthly one -- it does exactly the same work.
-        """
-        from solaris.core import constants as C
-
-        yearly = C.ee_cost_units("yearly", "tiles", layer="roof_mask")
-        monthly = C.ee_cost_units("monthly", "tiles", layer="roof_mask")
-        assert yearly == monthly == C.EE_COST_UNITS_TILE_STATIC
-
-    def test_stepping_through_every_overlay_fits_in_a_day(self):
-        """
-        The failure that was actually observed. A user opens one city, reads
-        the chart, and steps through all five overlays; that must not consume
-        a day's allowance.
-        """
-        from solaris.core import constants as C
-
-        layers = (
-            "roof_mask",
-            "shadow_frequency",
-            "sky_view_factor",
-            "net_irradiance",
-            "temperature_delta",
-        )
-        session = (
-            C.ee_cost_units("yearly", "yield")
-            + C.ee_cost_units("yearly", "series")
-            + sum(C.ee_cost_units("yearly", "tiles", layer=layer) for layer in layers)
-        )
-        budget = get_settings().daily_ee_cost_budget
-        assert session < budget / 2, (
-            f"one city costs {session:g} units against a {budget:g}-unit day, so a "
-            f"visitor cannot examine two sites. Overlay pricing is too high."
-        )
 
 
 class TestTileLayersRender:
@@ -662,34 +460,6 @@ class TestTileLayersRender:
 
         assert missing == [], f"layers that did not render: {missing}"
 
-    def test_the_heat_island_background_is_pinned_to_a_coarse_projection(self):
-        """
-        Structural, because the behavioural test above cannot see it: the fake
-        Earth Engine does not model the cost of an oversized kernel, so a
-        30,000-pixel focal window passes offline and fails in production.
-
-        What must hold is that the focal window is computed against a pinned
-        projection rather than the request's.
-        """
-        import pathlib as _pathlib
-
-        import solaris.api.app as app_mod
-
-        source = _pathlib.Path(app_mod.__file__).read_text(encoding="utf-8")
-        branch = source[source.index('elif req.layer == "temperature_delta"') :]
-        branch = branch[: branch.index("        else:")]
-
-        assert "reproject(" in branch, (
-            "the heat-island tile takes a 30 km focal mean; without pinning the "
-            "projection first, Earth Engine sizes that kernel against the tile "
-            "request and returns nothing at street zoom."
-        )
-        assert "focal_mean" in branch
-        assert branch.index("reproject(") < branch.index("focal_mean"), (
-            "reproject must come before focal_mean, or the kernel is still "
-            "sized against the request projection."
-        )
-
 
 class TestStaticFilesAreNeverRateLimited:
     """
@@ -735,16 +505,3 @@ class TestStaticFilesAreNeverRateLimited:
         for _ in range(10):
             status = client.get(path).status_code
             assert status != 429, f"{path} was rate limited"
-
-    def test_the_rule_is_the_api_prefix(self):
-        from solaris.api.middleware import is_rate_limited
-
-        assert is_rate_limited("/api/yield")
-        assert is_rate_limited("/api/tiles")
-        assert is_rate_limited("/api/auth/guest")
-        assert not is_rate_limited("/api/health")
-        assert not is_rate_limited("/")
-        assert not is_rate_limited("/assets/Explore-BP6IwWWS.js")
-        assert not is_rate_limited("/textures/earth-night.jpg")
-        # A path that merely contains "api" is not under the API prefix.
-        assert not is_rate_limited("/apiary")

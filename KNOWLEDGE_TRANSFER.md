@@ -1786,7 +1786,7 @@ reach real Earth Engine only when run *after* another test file. The consumer
 list is discovered by walking the package rather than hand-maintained, because
 the hand-maintained version checked itself and passed regardless.
 
-The fake is itself tested in `tests/unit/test_fake_ee.py`. When it disagrees with
+When the fake disagrees with
 real Earth Engine, the fake is wrong — it was once *more forgiving* than the real
 API and thereby hid a real edge artefact where 75% of sky-view pixels were masked
 and energy dropped 58%.
