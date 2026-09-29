@@ -1027,3 +1027,227 @@ a.card:hover {
     animation: none;
   }
 }
+
+/* ---------------------------------------------------------------------------
+ * Data page: resolution zoom
+ * ------------------------------------------------------------------------- */
+
+.scale-stage {
+  display: grid;
+  place-items: center;
+  min-height: 300px;
+  padding: 1.5rem 0 3.4rem;
+  background: var(--bg-inset);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+
+.scale-frame {
+  position: relative;
+  border: 2px solid;
+  border-radius: 3px;
+  animation: scale-frame-in var(--dur-enter) var(--ease-out);
+}
+
+.scale-frame__label {
+  position: absolute;
+  top: 8px;
+  right: 10px;
+  font-size: 0.8rem;
+  font-weight: 650;
+}
+
+/* Finer pixels anchor at the bottom-left corner, so each nests inside the
+   next and the shrink has one fixed point. */
+.scale-nested {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  border: 1.5px solid;
+  border-radius: 2px;
+  transform-origin: bottom left;
+}
+
+.scale-nested--enter {
+  animation: scale-shrink 700ms var(--ease-out);
+}
+
+.scale-nested__label {
+  position: absolute;
+  top: 4px;
+  right: 6px;
+  font-size: 0.72rem;
+  font-weight: 650;
+}
+
+.scale-marker {
+  position: absolute;
+  left: 8px;
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.72rem;
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+
+.scale-marker__dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--c);
+  box-shadow: 0 0 6px 1px var(--c);
+}
+
+@keyframes scale-shrink {
+  from { transform: scale(var(--from)); }
+  to { transform: scale(1); }
+}
+
+@keyframes scale-frame-in {
+  from { opacity: 0.4; }
+  to { opacity: 1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .scale-frame,
+  .scale-nested--enter { animation: none; }
+}
+
+/* ---------------------------------------------------------------------------
+ * Data page: source cards
+ *
+ * Colour is the role: the same key the result charts use, so a card says which
+ * part of the estimate it feeds. The glow and the top rule both come from one
+ * custom property, so a card cannot end up in two colours.
+ * ------------------------------------------------------------------------- */
+
+.source-card {
+  position: relative;
+  overflow: hidden;
+  border-top: 3px solid var(--role);
+  background:
+    radial-gradient(
+      120% 70% at 100% 0%,
+      color-mix(in srgb, var(--role) 16%, transparent) 0%,
+      transparent 62%
+    ),
+    var(--bg-raised);
+  transition: border-color var(--dur-swap) var(--ease-out), box-shadow var(--dur-swap) var(--ease-out);
+}
+
+/* Not a link, so no lift -- only the glow answers the pointer. */
+.source-card:hover {
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--role) 40%, transparent),
+    0 18px 40px -24px color-mix(in srgb, var(--role) 55%, transparent);
+}
+
+.source-card__role {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin-bottom: 0.7rem;
+  padding: 0.18rem 0.6rem 0.18rem 0.45rem;
+  font-size: 0.74rem;
+  font-weight: 600;
+  color: var(--role);
+  background: color-mix(in srgb, var(--role) 13%, transparent);
+  border: 1px solid color-mix(in srgb, var(--role) 32%, transparent);
+  border-radius: 999px;
+}
+
+.source-card__role::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--role);
+  box-shadow: 0 0 6px var(--role);
+}
+
+.res-meter {
+  margin: 0.2rem 0 1rem;
+}
+
+.res-meter__track {
+  height: 6px;
+  background: var(--bg-inset);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.res-meter__fill {
+  height: 100%;
+  border-radius: 3px;
+  box-shadow: 0 0 10px color-mix(in srgb, currentColor 30%, transparent);
+  animation: meter-grow 900ms var(--ease-out) both;
+}
+
+.res-meter__scale {
+  position: relative;
+  height: 1em;
+  margin-top: 0.3rem;
+  font-size: 0.68rem;
+  color: var(--text-faint);
+}
+
+.res-meter__scale span {
+  position: absolute;
+  transform: translateX(-50%);
+  white-space: nowrap;
+}
+.res-meter__scale span:first-child { transform: none; }
+.res-meter__scale span:last-child { transform: translateX(-100%); }
+
+@keyframes meter-grow {
+  from { width: 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .res-meter__fill { animation: none; }
+  .source-card { transition: none; }
+}
+
+/* ---------------------------------------------------------------------------
+ * Page header block: centred
+ *
+ * Only the title and the lede under it -- short, standalone text that
+ * introduces the page. Everything that runs past two lines stays
+ * left-aligned: a centred paragraph gives every line a different starting
+ * point, which is costly on number-heavy explanatory prose.
+ *
+ * Scoped by structure, so it applies to any page that opens with a title and
+ * lede, and never to Explore (wide layout) or the landing hero (whose copy
+ * sits left of the globe). The extra space after the block is what makes the
+ * return to left alignment read as deliberate rather than as an accident.
+ * ------------------------------------------------------------------------- */
+
+.page:not(.page--wide) > h1:first-child,
+.page:not(.page--wide) > h1:first-child + .lede,
+.page:not(.page--wide) > h1:first-child + .lede + .lede,
+.page:not(.page--wide) > h1:first-child + .lede + .source-note {
+  text-align: center;
+  margin-inline: auto;
+  /* Even line lengths, so a centred intro never ends on a one-word orphan.
+     Browsers without support fall back to ordinary wrapping. */
+  text-wrap: balance;
+}
+
+.page:not(.page--wide) > h1:first-child + .lede,
+.page:not(.page--wide) > h1:first-child + .lede + .lede,
+.page:not(.page--wide) > h1:first-child + .lede + .source-note {
+  margin-bottom: 2.4rem;
+}
+
+/* Consecutive intro paragraphs stay together; the gap belongs after the last. */
+.page:not(.page--wide) > h1:first-child + .lede:has(+ .lede),
+.page:not(.page--wide) > h1:first-child + .lede:has(+ .source-note) {
+  margin-bottom: 0.9rem;
+}
+
+/* A section heading that introduces a full-width grid centres over it. A
+   heading followed by prose stays with its prose. */
+.page h2:has(+ .grid) {
+  text-align: center;
+}
