@@ -1,96 +1,35 @@
 """
 Soiling: dust accumulation, rain washing, and the cleaning interval.
 
-What this replaces, and why the old form could not be rescued by tuning
-----------------------------------------------------------------------
-The previous model was one line::
-
-    loss = mean_annual_AOD * 0.08
-
-Three things are wrong with it, and only the first is a matter of coefficient.
-
-1. It is **unbounded**. Above AOD 12.5 retention goes negative, i.e. negative
-   generated energy. A floor was added as a stopgap.
-2. It has **no rain term**, although Indian soiling is monsoon-modulated. That
-   is not a detail: across the ten evaluation cities the number of days per
-   year with cleaning-grade rainfall runs from 59 (Jodhpur, 2022) to 195
-   (Guwahati, 2022) -- a factor of three in how often a roof gets washed --
-   and the old model gave both the same answer at equal AOD.
-3. It is **window-independent**. The identical annual loss was applied to a
-   one-day window and to a full year. A single day beginning the morning after
-   heavy rain carries almost no soiling; the same day at the end of a dry
-   Rajasthan winter carries near the saturation value. Returning one number
-   for both is not an approximation of the physics, it is the absence of it.
-
-The replacement is the published Kimber model, which the old code already
-*cited* while hand-rolling something else.
-
-The model
----------
-Soiling accumulates at a constant daily rate while dry, resets on rain above a
-threshold, and saturates::
+The published Kimber model. Soiling accumulates at a constant daily rate while
+dry, resets on rain above a threshold, and saturates::
 
     L(t) = min(r * t, L_max)
 
-where ``t`` is days since the last cleaning. ``r`` is derived from aerosol
-optical depth, which is the atmospheric loading actually driving dry
-deposition, so the spatial variation the project cares about is preserved. The
-window mean is then the time-average of that sawtooth, which has a closed form
--- no simulation needed.
+``t`` is days since the last cleaning and ``r`` is derived from aerosol optical
+depth, which is the loading actually driving dry deposition -- so the spatial
+variation the project exists to show is preserved. The window mean is the
+time-average of that sawtooth, which has a closed form; no simulation needed.
 
-Calibration, and what it rests on
----------------------------------
-pvlib's ``soiling.kimber`` defaults to ``soiling_loss_rate=0.0015`` per day
-with a ``cleaning_threshold`` of **6 mm** and a 14-day grace period. Those
-defaults come from a temperate US site and are wrong for India in every term:
-measured Delhi rates are roughly double, and a 14-day post-rain grace period
-assumes ground that stays damp, which the pre-monsoon Indo-Gangetic plain does
-not.
+Three things to know before editing:
 
-So the rate is calibrated against measured Indian values instead
-(:data:`DELHI_MEASURED_RATE_PER_DAY`) and the threshold is set to 1 mm. The
-grace period is dropped to zero and :data:`GRACE_PERIOD_DAYS` records why.
+* **The calibration is Indian, not pvlib's default.** pvlib defaults to
+  0.0015/day, a 6 mm cleaning threshold and a 14-day grace period, all from a
+  temperate US site. Measured Delhi rates are roughly double, and a 14-day
+  grace period assumes ground that stays damp, which the pre-monsoon
+  Indo-Gangetic plain does not. See :data:`DELHI_MEASURED_RATE_PER_DAY` and
+  :data:`GRACE_PERIOD_DAYS`.
+* **Accumulation is convex in dry-spell length**, so a mean-spell
+  approximation understates the loss -- measured at 1.8x to 12.6x on real
+  rainfall, worst in the arid cities where soiling matters most. The serving
+  path therefore samples the actual daily series and treats the mean-spell form
+  as an explicitly-flagged degradation.
+* **:func:`kimber_reference` is the cross-check**, running
+  ``pvlib.soiling.kimber`` on identical inputs. Keep it passing: reaching
+  agreement with it found three real errors in the closed form.
 
-Jensen's inequality, which turned out to dominate
--------------------------------------------------
-The accumulation is **convex** in dry-spell length, so the mean loss over
-uneven spells is strictly greater than the loss computed from their mean
-length. That was expected. What was not expected is the size: measured against
-real NASA POWER rainfall for the ten evaluation cities in 2021, using the mean
-spell understates annual soiling by **1.8x (Leh) to 12.6x (Ahmedabad)**, and by
-4-6x for most cities.
-
-The mechanism is visible in the data. Ahmedabad 2021 had 82 cleaning-rain days
--- a mean dry spell of 4.4 days -- and also a **135-day** unbroken dry spell.
-That one spell carries most of the annual soiling, and the mean spell cannot
-see it. Note the ordering: the error is *worst* in the arid cities, which are
-exactly the ones where soiling matters most.
-
-The consequence is a design decision rather than a caveat: the serving path
-samples the actual daily series, at the cost of one extra Earth Engine
-round-trip, and the mean-spell form is kept only as an explicitly-flagged
-degradation.
-
-Validation against pvlib
-------------------------
-:func:`kimber_reference` runs ``pvlib.soiling.kimber`` -- an independent
-implementation of the same published model -- on identical inputs. With
-matched configuration the two agree to within **1%** across all ten cities.
-Reaching that agreement took two corrections, and the second was only visible
-because of the first:
-
-1. The closed form counted the cleaning day itself as a dry day, inflating
-   every spell by one. Relative disagreement was inversely proportional to
-   spell length, which is the signature of a per-spell offset rather than a
-   difference of physics.
-2. Excluding those days from the spells also -- wrongly -- excluded them from
-   the time average. A cleaning day carries almost no soiling, so it belongs in
-   the denominator; dropping it made the disagreement *worse*, from 0.2 to 2.5
-   fraction points. The window mean now divides by the whole window.
-
-The accumulation is also summed per day rather than integrated, since the model
-is defined daily. All three changes are the difference between "close enough"
-and agreeing with an independent implementation.
+Full derivation, calibration evidence and validation results:
+KNOWLEDGE_TRANSFER.md sections 4.5 and 6.5.
 """
 
 from __future__ import annotations
@@ -119,7 +58,6 @@ MEASURED_RATES_PER_DAY = {
 #: sanity ceiling: a model predicting more than this for an Indian city is
 #: predicting something nobody has measured.
 MAX_MEASURED_RATE_PER_DAY = 0.0047
-MAX_MEASURED_MONTHLY_LOSS = 0.102
 
 #: The measured rate the deposition coefficient is anchored on: the Delhi
 #: winter value, which is the best-documented of the three.

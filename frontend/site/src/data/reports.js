@@ -21,7 +21,7 @@ import manifest from '@artifacts/decomposition.manifest.json';
 export { validation, soiling, trackB, decomposition, manifest };
 
 /** One suite from the validation report, by name. */
-export function suite(name) {
+function suite(name) {
   return validation.suites?.[name] ?? null;
 }
 
@@ -69,11 +69,6 @@ export function specificYieldRows() {
 
 export function beamFractionSuite() {
   return suite('beam_fraction');
-}
-
-/** The decomposition ladder, worst rung first, as the report records it. */
-export function decompositionLadder() {
-  return decomposition.scores ?? [];
 }
 
 export function generatedAt() {

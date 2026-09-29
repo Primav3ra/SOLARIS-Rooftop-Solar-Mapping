@@ -54,10 +54,6 @@ export class ApiError extends Error {
 
 let guestToken = localStorage.getItem(GUEST_KEY) ?? null;
 
-export function currentGuestToken() {
-  return guestToken;
-}
-
 async function ensureGuestToken() {
   if (guestToken) return guestToken;
   try {

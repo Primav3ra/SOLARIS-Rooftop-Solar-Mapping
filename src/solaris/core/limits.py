@@ -11,33 +11,23 @@ rejected request costs nothing.
 
 **2. A concurrency semaphore.** Every endpoint is a sync ``def``, so FastAPI
 runs it on a threadpool of 40. Without a cap, one instance can hold 40 blocking
-``getInfo()`` calls open at once. That is the actual concurrency hazard, and it
-is also why the request timeout is not sufficient on its own: an ``anyio``
-timeout frees the *client*, but ``getInfo()`` is uninterruptible blocking I/O,
-so the worker thread keeps going.
+``getInfo()`` calls open at once. That is also why the request timeout is not
+sufficient alone: an ``anyio`` timeout frees the *client*, but ``getInfo()`` is
+uninterruptible blocking I/O, so the worker thread keeps going.
 
-**3. A daily Earth Engine compute budget**, and this is the layer that actually
-protects the quota.
-
-It counts **cost units**, not round-trips. That distinction was not academic:
-Earth Engine bills EECU-seconds, every ``/api/yield`` makes 12 round-trips
-regardless of window, and a yearly window costs more than ten times a
-single-day one. A call-counting budget therefore treated the cheapest and
-dearest queries as identical.
-
-The ceiling it defends is fixed and cannot be raised from the console. The
-noncommercial tier allows 540,000 EECU-seconds per month as a **system limit**,
-and the daily figure beside it reads "Unlimited" with no adjustable setting --
-so Google offers no lever and this counter is the only guard available. One
-measured day of development consumed 39,301 EECU-seconds, about 91% of that
-month's usage to date, from a few dozen queries. See
-``constants.EE_COST_UNITS``.
+**3. A daily Earth Engine compute budget**, counted in **cost units** rather
+than round-trips -- Earth Engine bills EECU-seconds, and a yearly window costs
+more than ten times a single-day one while making the same number of calls.
+See :data:`solaris.core.constants.EE_COST_UNITS`. The monthly EECU ceiling is a
+non-adjustable system limit, so this counter is the only guard available.
 
 Per-identity rate limiting sits alongside these, keyed on an opaque session
 token where one is presented and falling back to IP. IP alone is weak in India
 specifically: mobile carriers use carrier-grade NAT, so thousands of
 subscribers share an egress address -- an IP-keyed limit restricts them
 collectively while one determined caller rotates addresses.
+
+Sizing evidence and the console's lack of a lever: KNOWLEDGE_TRANSFER.md §8.
 """
 
 from __future__ import annotations

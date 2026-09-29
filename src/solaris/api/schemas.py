@@ -18,11 +18,30 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-MAX_AOI_KM2: float = 30.0  # keeps AOIs inside the 4 m reduce-scale tier
-MAX_HALF_SIZE_DEG: float = 0.025  # ~2.8 km half-side => ~30 km2 at Delhi latitude
-MAX_AOI_VERTICES: int = 100
-OPEN_BUILDINGS_MIN_YEAR: int = 2016  # Open Buildings 2.5D Temporal v1 vintages
-OPEN_BUILDINGS_MAX_YEAR: int = 2023
+# Imported, not restated.
+#
+# This module previously declared its own copies of these limits, so the values
+# *enforced* here and the values *advertised* by /api/presets -- which reads
+# solaris.core.constants -- were two independent definitions that happened to
+# agree. They had already started to drift: the same 0.025 was annotated
+# "~27 km2 at Delhi latitude" in one file and "~30 km2" in the other.
+from solaris.core.constants import (
+    DEFAULT_HALF_SIZE_DEG as _DEFAULT_HALF_SIZE_DEG,
+)
+from solaris.core.constants import (
+    DEFAULT_ROOF_YEAR as _DEFAULT_ROOF_YEAR,
+)
+from solaris.core.constants import (
+    MAX_AOI_KM2,
+    MAX_AOI_VERTICES,
+    MAX_BUILDINGS,
+    MAX_HALF_SIZE_DEG,
+    OPEN_BUILDINGS_MAX_YEAR,
+    OPEN_BUILDINGS_MIN_YEAR,
+)
+from solaris.core.constants import (
+    PRESENCE_THRESHOLD as _PRESENCE_THRESHOLD,
+)
 
 _DEG_KM = 111.32  # km per degree of latitude
 
@@ -56,7 +75,7 @@ class AoiMixin(BaseModel):
     coordinates: list[list[float]] | None = None
     lat: float | None = Field(default=None, ge=-90.0, le=90.0)
     lon: float | None = Field(default=None, ge=-180.0, le=180.0)
-    half_size_deg: float = Field(default=0.01, gt=0.0, le=MAX_HALF_SIZE_DEG)
+    half_size_deg: float = Field(default=_DEFAULT_HALF_SIZE_DEG, gt=0.0, le=MAX_HALF_SIZE_DEG)
 
     @field_validator("coordinates")
     @classmethod
@@ -91,8 +110,10 @@ class AoiMixin(BaseModel):
 class RoofMixin(BaseModel):
     """Rooftop mask parameters."""
 
-    roof_year: int = Field(default=2022, ge=OPEN_BUILDINGS_MIN_YEAR, le=OPEN_BUILDINGS_MAX_YEAR)
-    presence_threshold: float = Field(default=0.5, ge=0.0, le=1.0)
+    roof_year: int = Field(
+        default=_DEFAULT_ROOF_YEAR, ge=OPEN_BUILDINGS_MIN_YEAR, le=OPEN_BUILDINGS_MAX_YEAR
+    )
+    presence_threshold: float = Field(default=_PRESENCE_THRESHOLD, ge=0.0, le=1.0)
     min_height_m: float = Field(default=0.0, ge=0.0, le=500.0)
 
 
@@ -143,4 +164,4 @@ class TilesRequest(AoiMixin, RoofMixin, TemporalMixin):
 
 class BuildingsRequest(AoiMixin):
     building_confidence: float = Field(default=0.7, ge=0.0, le=1.0)
-    limit: int = Field(default=400, ge=1, le=2000)
+    limit: int = Field(default=400, ge=1, le=MAX_BUILDINGS)

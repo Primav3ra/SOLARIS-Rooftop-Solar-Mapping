@@ -9,8 +9,8 @@ of these values imports it from here; the frontend fetches them from
 ``/api/presets`` rather than carrying its own copy.
 
 Every value carries its provenance. Where a number is an assumption rather than
-a measurement, the docstring says so -- see ``docs/methodology.md`` for the full
-discussion and ``docs/limitations.md`` for what each one bounds.
+a measurement, the docstring says so -- see ``KNOWLEDGE_TRANSFER.md §4`` for the full
+discussion and ``KNOWLEDGE_TRANSFER.md §11`` for what each one bounds.
 """
 
 from __future__ import annotations
@@ -36,7 +36,7 @@ PANEL_EFFICIENCY = 0.18
 #: Lumped performance ratio. NOTE: this bundles temperature, inverter, wiring,
 #: mismatch, soiling and availability losses into one scalar, which is why it
 #: is ambiguous against the separate UHI and soiling penalty layers. Phase 3
-#: decomposes it via pvlib; see docs/methodology.md. Observed year-one PR for
+#: decomposes it via pvlib; see KNOWLEDGE_TRANSFER.md §4. Observed year-one PR for
 #: Indian rooftop plants is 0.78-0.83.
 PERFORMANCE_RATIO = 0.80
 
@@ -136,13 +136,6 @@ DEFAULT_HALF_SIZE_DEG = 0.01
 #: application.
 NONCOMMERCIAL_EECU_SECONDS_PER_MONTH = 540_000
 
-#: Measured burn rate, recorded because it is the basis for the default budget.
-#:
-#: One day of development -- a few dozen queries, mostly yearly windows, plus
-#: the live integration tests and the round-trip profiler -- consumed 39,301
-#: EECU-seconds, which was 91% of that month's usage to date.
-MEASURED_DEV_DAY_EECU_SECONDS = 39_301
-
 #: EECU-seconds per cost unit, where one unit is one monthly-window query.
 #:
 #: Derived from the figure above rather than guessed, and the derivation is
@@ -180,12 +173,39 @@ EE_COST_UNITS = {
     "yearly": 12.0,
 }
 
-#: Cost of a tile rendering, in the same units. Tiles reduce at the map's own
-#: scale rather than 4 m, so they are cheaper than a yield reduction, but the
-#: roof preview fires on selection and so runs more often.
-EE_COST_UNITS_TILE = 0.5
+#: Cost of each Earth Engine endpoint, as a multiple of the same window's
+#: ``/api/yield`` cost.
+#:
+#: The budget originally metered ``/api/yield`` alone, which left four of the
+#: five Earth Engine endpoints charging nothing. ``/api/series`` was the
+#: largest omission: it runs one shadow reduction per sub-period, so a yearly
+#: series does roughly the same total work as a yearly yield while being
+#: invisible to the counter.
+#:
+#: - ``series`` reduces shadow per sub-period and adds a sky-view and an area
+#:   reduction on top, so slightly more than the equivalent yield.
+#: - ``baseline`` runs ERA5 reductions only -- no shadow, no sky-view.
+#: - ``tiles`` takes four scalar samples and then hands a lazily-evaluated
+#:   ``getMapId`` to the client; cheaper per call, but the overlay switcher
+#:   fires it far more often than a yield.
+EE_COST_ENDPOINT_MULTIPLIER = {
+    "yield": 1.0,
+    "series": 1.5,
+    "baseline": 0.3,
+    "tiles": 0.5,
+}
+
+#: ``/api/buildings`` is a single vector ``getInfo`` bounded by ``MAX_BUILDINGS``
+#: and does not reduce over time, so its cost is flat rather than window-scaled.
+EE_COST_UNITS_BUILDINGS = 0.1
 
 
-def ee_cost_units(mode: str) -> float:
-    """Relative compute cost for a temporal mode, defaulting to the dearest."""
-    return EE_COST_UNITS.get(mode, max(EE_COST_UNITS.values()))
+def ee_cost_units(mode: str, endpoint: str = "yield") -> float:
+    """
+    Relative compute cost of one query, by temporal mode and endpoint.
+
+    An unknown mode bills the dearest and an unknown endpoint bills as a yield,
+    so a new caller is over-charged rather than waved through unmetered.
+    """
+    mode_cost = EE_COST_UNITS.get(mode, max(EE_COST_UNITS.values()))
+    return mode_cost * EE_COST_ENDPOINT_MULTIPLIER.get(endpoint, 1.0)

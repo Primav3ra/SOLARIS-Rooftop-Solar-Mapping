@@ -206,27 +206,6 @@ class PoaResult:
         return self.poa_global_kwh_m2 / self.ghi_kwh_m2 if self.ghi_kwh_m2 else 1.0
 
 
-def monthly_diurnal_index(year: int = 2021, timezone: str = "UTC"):
-    """
-    A 288-step index: the 15th of each month, hourly.
-
-    Mid-month days stand in for their month's mean solar geometry, which is
-    where the declination sits closest to the monthly average.
-    """
-    pd = _require_pvlib() and __import__("pandas")
-    stamps = []
-    for month in range(1, 13):
-        stamps.extend(
-            pd.date_range(
-                f"{year}-{month:02d}-15 00:30",
-                periods=24,
-                freq="1h",
-                tz=timezone,
-            )
-        )
-    return pd.DatetimeIndex(stamps)
-
-
 def transpose(
     *,
     latitude: float,

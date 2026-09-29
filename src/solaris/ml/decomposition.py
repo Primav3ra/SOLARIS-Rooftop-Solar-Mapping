@@ -37,7 +37,6 @@ from __future__ import annotations
 
 import math
 from dataclasses import asdict, dataclass, field
-from typing import Protocol
 
 from solaris.ml.features import FEATURE_NAMES, Sample
 
@@ -51,12 +50,6 @@ MIN_SKILL_OVER_ERBS = 0.10
 
 #: Latitude bands for the climatology rung, degrees.
 LATITUDE_BANDS = ((0.0, 15.0), (15.0, 25.0), (25.0, 90.0))
-
-
-class Predictor(Protocol):
-    name: str
-
-    def predict(self, samples: list[Sample]) -> list[float]: ...
 
 
 # ---------------------------------------------------------------------------

@@ -54,6 +54,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from solaris.core.constants import TEMP_COEFF_PER_C
+
 # ---------------------------------------------------------------------------
 # Loss terms that remain assumptions
 # ---------------------------------------------------------------------------
@@ -100,8 +102,9 @@ AVAILABILITY_LOSS = 0.0
 INVERTER_EFFICIENCY = 0.96
 
 #: Module power temperature coefficient, per degC. Crystalline silicon,
-#: IEC 60891 / De Soto et al. (2006).
-TEMPERATURE_COEFFICIENT = -0.004
+#: IEC 60891 / De Soto et al. (2006). Taken from core.constants rather than
+#: restated -- this was one of three independent declarations of it.
+TEMPERATURE_COEFFICIENT = TEMP_COEFF_PER_C
 
 #: Standard test condition cell temperature (degC).
 STC_CELL_TEMPERATURE_C = 25.0

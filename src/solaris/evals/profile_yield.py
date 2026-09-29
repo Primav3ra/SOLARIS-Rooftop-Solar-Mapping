@@ -39,10 +39,6 @@ from datetime import UTC, datetime
 
 REPORT_DIR = pathlib.Path(__file__).resolve().parents[3] / "evals" / "reports"
 
-#: Round-trips the shadow and sky-view layers are responsible for, out of the
-#: total. These are the only calls a surrogate could affect.
-SHADOW_ATTRIBUTABLE_STAGES = ("shadow_frequency", "sky_view_factor", "shade_matrix")
-
 
 def count_round_trips() -> dict:
     """

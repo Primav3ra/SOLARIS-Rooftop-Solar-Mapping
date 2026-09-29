@@ -6,7 +6,7 @@ name: Integration (live Earth Engine)
 # nothing.
 #
 # Keyless via Workload Identity Federation -- no service-account JSON in a
-# GitHub secret. See docs/deployment.md for the one-time setup, and note the
+# GitHub secret. See KNOWLEDGE_TRANSFER.md §9 for the one-time setup, and note the
 # step that silently 403s people: the runtime service account's email must
 # itself be registered as an Earth Engine user.
 

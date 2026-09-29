@@ -404,7 +404,11 @@ def compute_baseline(req: BaselineRequest, request: Request) -> dict[str, Any]:
     ee.Initialize() every time and used its own copy of the roof-mask builder.
     It now shares _ensure_ee and solaris.gee.layers with every other endpoint.
     """
+    ee_stack = contextlib.ExitStack()
     try:
+        # ERA5 reductions only -- no shadow and no sky-view -- so this costs a
+        # fraction of the equivalent /api/yield. The window is resolved further
+        # down, so the gate is entered there rather than here.
         # EE must be initialised before any ee.* object is constructed --
         # _aoi_from_req builds an ee.Geometry, so it cannot come first.
         deps.ensure_ee()
@@ -433,6 +437,8 @@ def compute_baseline(req: BaselineRequest, request: Request) -> dict[str, Any]:
 
         mode = win["mode"]
         s_date, e_date = win["start_date"], win["end_date_exclusive"]
+
+        ee_stack.enter_context(deps.ee_gate(n_calls=4, cost=C.ee_cost_units(mode, "baseline")))
 
         roof_mask = build_roof_layers(
             aoi,
@@ -497,6 +503,8 @@ def compute_baseline(req: BaselineRequest, request: Request) -> dict[str, Any]:
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e)) from e
+    finally:
+        ee_stack.close()
 
 
 @app.post("/api/tiles")
@@ -508,9 +516,9 @@ def tiles(req: TilesRequest) -> dict[str, Any]:
       - shadow_frequency: shadow frequency (0..1)
       - sky_view_factor: fraction of diffuse sky visible from the rooftop (0..1)
       - net_irradiance: net irradiance (kWh/m^2 over window)
-      - combined_derate: uhi_derate * soiling_retention (scalar image)
       - temperature_delta: UHI delta temperature (MODIS LST daytime anomaly; degC)
     """
+    ee_stack = contextlib.ExitStack()
     try:
         try:
             win = resolve_temporal_window(
@@ -524,6 +532,10 @@ def tiles(req: TilesRequest) -> dict[str, Any]:
         except ValueError as ex:
             raise HTTPException(status_code=400, detail=str(ex)) from ex
 
+        # Four scalar samples plus a lazily-evaluated getMapId. Cheaper than a
+        # yield per call, but the overlay switcher fires it far more often, and
+        # until now it charged nothing at all.
+        ee_stack.enter_context(deps.ee_gate(n_calls=5, cost=C.ee_cost_units(win["mode"], "tiles")))
         deps.ensure_ee()
         coords, aoi = deps.aoi_from_req(req)
         centroid = aoi.centroid(1)
@@ -609,23 +621,6 @@ def tiles(req: TilesRequest) -> dict[str, Any]:
             # Typical Indian UHI anomalies: ~2-6 degC (but allow a bit wider).
             # Avoid the bright yellow/orange used by irradiance visualizations; keep it cleaner.
             vis = {"min": -3.0, "max": 8.0, "palette": ["2563eb", "22c55e", "a855f7", "ef4444"]}
-        elif req.layer == "combined_derate":
-            # Removed from the layer list, and rejected rather than rendered.
-            #
-            # The heat-island and soiling derates are AOI-wide *scalars*, so
-            # this layer could only ever draw a single flat colour over the
-            # whole box. It was not a poor visualisation, it was a map of a
-            # number that has no spatial variation -- and drawing it implied a
-            # per-pixel result the model does not produce. The spatially varying
-            # part of the same physics is `temperature_delta`.
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    "combined_derate is an area-wide scalar, not a per-pixel "
-                    "layer, so it cannot be mapped. Use temperature_delta for "
-                    "the heat-island field, or read the derate from /api/yield."
-                ),
-            )
         else:
             # Net irradiance, stretched across the range roofs occupy.
             #
@@ -673,6 +668,8 @@ def tiles(req: TilesRequest) -> dict[str, Any]:
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e)) from e
+    finally:
+        ee_stack.close()
 
 
 @app.post("/api/buildings")
@@ -681,7 +678,11 @@ def buildings(req: BuildingsRequest) -> dict[str, Any]:
     Return Open Buildings v3 polygons within the AOI as GeoJSON.
     Intended for map rendering / selection (open-data-only).
     """
+    ee_stack = contextlib.ExitStack()
     try:
+        # One vector getInfo, bounded by MAX_BUILDINGS and independent of any
+        # time window, so the charge is flat rather than window-scaled.
+        ee_stack.enter_context(deps.ee_gate(n_calls=1, cost=C.EE_COST_UNITS_BUILDINGS))
         deps.ensure_ee()
         coords, aoi = deps.aoi_from_req(req)
         fc = get_open_buildings_vector(aoi, confidence_threshold=req.building_confidence).limit(
@@ -726,6 +727,8 @@ def buildings(req: BuildingsRequest) -> dict[str, Any]:
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e)) from e
+    finally:
+        ee_stack.close()
 
 
 @app.post("/api/yield")
@@ -778,7 +781,7 @@ def compute_yield(req: YieldRequest, request: Request) -> Response:
         # 12 round-trips whatever the window, but the compute -- which is what
         # Earth Engine bills -- scales with it, so the budget is charged the
         # window's cost rather than the call count.
-        ee_stack.enter_context(deps.ee_gate(n_calls=12, cost=C.ee_cost_units(win["mode"])))
+        ee_stack.enter_context(deps.ee_gate(n_calls=12, cost=C.ee_cost_units(win["mode"], "yield")))
         deps.ensure_ee()
         coords, aoi = deps.aoi_from_req(req)
         centroid = aoi.centroid(1)
@@ -1156,7 +1159,7 @@ def compute_yield(req: YieldRequest, request: Request) -> Response:
             "svf_penalty_percent": svf_penalty_percent,
             "sky_view_factor_meta": {
                 "n_azimuth": SkyViewFactor.N_AZIMUTH,
-                "sample_radii_px": list(SkyViewFactor.DIST_PX),
+                "sample_radii_m": list(SkyViewFactor.DIST_M),
             },
             "uhi_derate_factor": uhi_info["uhi_derate_factor"],
             "delta_t_uhi_celsius": uhi_info["delta_t_uhi_celsius"],
@@ -1242,6 +1245,7 @@ def compute_series(req: YieldRequest, request: Request) -> dict[str, Any]:
               * [ (1-beam)*SUM(SVF*area) + beam*SUM((1-shadow)*area) ]
     so a point here matches what /api/yield gives for that sub-window.
     """
+    ee_stack = contextlib.ExitStack()
     try:
         try:
             win = resolve_temporal_window(
@@ -1255,11 +1259,16 @@ def compute_series(req: YieldRequest, request: Request) -> dict[str, Any]:
         except ValueError as ex:
             raise HTTPException(status_code=400, detail=str(ex)) from ex
 
+        mode = win["mode"]
+
+        # The dearest endpoint, and previously the only unmetered one: it runs a
+        # shadow reduction per sub-period, so a yearly series does about the work
+        # of a yearly yield spread over twelve requests.
+        ee_stack.enter_context(deps.ee_gate(n_calls=16, cost=C.ee_cost_units(mode, "series")))
         deps.ensure_ee()
         coords, aoi = deps.aoi_from_req(req)
         centroid = aoi.centroid(1)
         lon_deg, lat_deg = deps.centroid_lon_lat(centroid)
-        mode = win["mode"]
 
         labels, items, bin_of = _series_layout(mode, win, lat_deg, lon_deg)
         if not items:
@@ -1352,6 +1361,8 @@ def compute_series(req: YieldRequest, request: Request) -> dict[str, Any]:
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e)) from e
+    finally:
+        ee_stack.close()
 
 
 # ---------------------------------------------------------------------------

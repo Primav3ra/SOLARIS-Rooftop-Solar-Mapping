@@ -41,9 +41,6 @@ from solaris.gee.irradiance import ERA5_BAND, ERA5_COLLECTION
 #: How far back to look when probing for the end of a collection.
 PROBE_HORIZON_DAYS = 400
 
-#: Earliest date any supported collection covers.
-EARLIEST_SUPPORTED = date(1981, 1, 1)
-
 
 @dataclass(frozen=True)
 class Coverage:

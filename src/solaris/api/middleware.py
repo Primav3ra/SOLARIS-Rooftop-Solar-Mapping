@@ -29,6 +29,7 @@ import sys
 import time
 import uuid
 from collections.abc import Awaitable, Callable, Mapping
+from dataclasses import dataclass
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
@@ -47,7 +48,42 @@ from solaris.core.limits import (
 #: Per-request context, so log lines can be correlated without threading an
 #: argument through every function.
 request_id_var: contextvars.ContextVar[str] = contextvars.ContextVar("request_id", default="-")
-ee_calls_var: contextvars.ContextVar[int] = contextvars.ContextVar("ee_calls", default=0)
+
+
+@dataclass
+class RequestCounters:
+    """
+    Earth Engine usage for one request.
+
+    A **mutable object** held in a contextvar, rather than two plain numbers,
+    and that is the whole point of the type.
+
+    ``BaseHTTPMiddleware`` runs the downstream app in a separate task, so it
+    gets a *copy* of the context. A handler calling ``var.set(n)`` rebinds the
+    name in its own copy and the middleware never sees it -- which is exactly
+    what happened: ``ee_calls`` was logged as ``0`` on every request from the
+    moment it was added, so the field advertised as the quota currency always
+    read zero.
+
+    Rebinding does not cross the boundary, but *mutation* does: the middleware
+    binds one instance before ``call_next`` and both sides hold a reference to
+    the same object.
+    """
+
+    calls: int = 0
+    #: Charged against the daily budget, in the units of
+    #: ``constants.EE_COST_UNITS``. Logged beside ``calls`` because the two
+    #: answer different questions: round-trip count is nearly constant across
+    #: temporal modes, while cost is what Earth Engine bills, so a yearly and a
+    #: daily query are identical in ``calls`` and differ 120-fold in ``cost``.
+    cost: float = 0.0
+
+
+#: ``None`` outside a request, so work done off the request path -- a CLI, a
+#: warm-up -- records nothing rather than accumulating into a shared default.
+ee_counters_var: contextvars.ContextVar[RequestCounters | None] = contextvars.ContextVar(
+    "ee_counters", default=None
+)
 
 logger = logging.getLogger("solaris")
 
@@ -169,7 +205,8 @@ class ObservabilityMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next: Callable[[Request], Awaitable]):
         request_id = request.headers.get("x-request-id") or uuid.uuid4().hex[:16]
         token = request_id_var.set(request_id)
-        calls_token = ee_calls_var.set(0)
+        counters = RequestCounters()
+        counters_token = ee_counters_var.set(counters)
         started = time.perf_counter()
         trace = cloud_trace(request)
 
@@ -272,7 +309,11 @@ class ObservabilityMiddleware(BaseHTTPMiddleware):
                     # The quota currency. This is the most useful number in the
                     # whole system: it turns "why is this slow or expensive"
                     # into a single query.
-                    "ee_calls": ee_calls_var.get(),
+                    "ee_calls": counters.calls,
+                    # What the day's budget was actually charged. This is the
+                    # field to correlate against the Earth Engine console
+                    # meter, because it is denominated the way the quota is.
+                    "ee_cost": round(counters.cost, 3),
                     "cache": response.headers.get("X-Cache", "-"),
                 },
                 "trace": trace,
@@ -280,7 +321,7 @@ class ObservabilityMiddleware(BaseHTTPMiddleware):
         )
 
         request_id_var.reset(token)
-        ee_calls_var.reset(calls_token)
+        ee_counters_var.reset(counters_token)
         return response
 
 
@@ -321,8 +362,22 @@ def _error_response(
 
 
 def record_ee_calls(n: int = 1) -> None:
-    """Add to this request's Earth Engine call count."""
-    ee_calls_var.set(ee_calls_var.get() + n)
+    """Add to this request's Earth Engine round-trip count."""
+    counters = ee_counters_var.get()
+    if counters is not None:
+        counters.calls += n
+
+
+def record_ee_cost(units: float) -> None:
+    """Add to this request's charge against the daily compute budget."""
+    counters = ee_counters_var.get()
+    if counters is not None:
+        counters.cost += units
+
+
+def current_counters() -> RequestCounters:
+    """This request's usage so far, or an empty tally outside a request."""
+    return ee_counters_var.get() or RequestCounters()
 
 
 def install(app: FastAPI, settings: Settings) -> None:

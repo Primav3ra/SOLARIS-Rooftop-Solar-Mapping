@@ -12,7 +12,10 @@ else, so this is where hit/miss behaviour is actually asserted.
 
 from __future__ import annotations
 
+import contextlib
+import logging
 import warnings
+from typing import ClassVar
 
 import pytest
 
@@ -296,18 +299,21 @@ class TestErrorEnvelope:
 
 
 class TestEarthEngineCallAccounting:
-    def test_calls_are_counted_per_request(self, app_client):
+    def test_the_counter_is_empty_outside_a_request(self, app_client):
         """
-        The ee_calls counter is the quota currency, and the most useful number
-        in the request log: it turns "why is this slow or expensive" into one
-        query.
+        Scoped to a request, so work off the request path records nothing
+        rather than accumulating into a shared default.
+
+        This assertion used to be the *only* check on ee_calls, and it passed
+        while the logged value was always zero -- it can only ever observe the
+        out-of-request state. The real check is
+        TestRequestLogFields, which reads the emitted line.
         """
         from solaris.api import middleware
 
         app_client.post("/api/yield", json=_request())
-        # The counter is per-request via a contextvar, so it resets to the
-        # default outside a request.
-        assert middleware.ee_calls_var.get() == 0
+        assert middleware.current_counters().calls == 0
+        assert middleware.current_counters().cost == 0.0
 
     def test_the_gate_bounds_concurrency(self, monkeypatch):
         monkeypatch.setenv("SOLARIS_MAX_CONCURRENT_EE_CALLS", "1")
@@ -315,3 +321,206 @@ class TestEarthEngineCallAccounting:
         limits_mod.reset_limits()
         gate = limits_mod.get_gate()
         assert gate.max_concurrent == 1
+
+
+class TestEveryEarthEngineEndpointIsMetered:
+    """
+    The budget only guards what it is wired into, and for a while it was wired
+    into one endpoint out of five.
+
+    ``/api/yield`` was gated; ``/api/series``, ``/api/tiles``, ``/api/baseline``
+    and ``/api/buildings`` all reached Earth Engine while charging nothing and
+    holding no concurrency slot. ``/api/series`` was the worst of them, because
+    it runs a shadow reduction per sub-period -- a yearly series does roughly
+    the work of a yearly yield -- and ``/api/tiles`` was the most frequent,
+    since the overlay switcher fires it on every layer change.
+
+    The behavioural tests below would pass again if someone added a sixth
+    endpoint and forgot the gate, so the structural test is the one that
+    actually holds the line.
+    """
+
+    #: Markers that mean a function reaches Earth Engine.
+    EE_MARKERS = (
+        "getInfo",
+        "getMapId",
+        "reduceRegion",
+        "ensure_ee",
+        "aggregate_array",
+    )
+
+    #: Handlers allowed to reach Earth Engine ungated, each with the reason.
+    EXEMPT: ClassVar[set[str]] = {
+        # The readiness probe. It establishes the Earth Engine session and runs
+        # no reduction, so its compute cost is negligible -- and gating it would
+        # be actively harmful: on an exhausted budget the probe would answer 503
+        # and Cloud Run would take the instance out of service, turning a spent
+        # daily allowance into an outage.
+        "ready",
+    }
+
+    def test_no_route_handler_touches_earth_engine_without_a_gate(self):
+        import ast
+        import pathlib
+
+        import solaris.api.app as app_mod
+
+        source = pathlib.Path(app_mod.__file__).read_text(encoding="utf-8")
+        tree = ast.parse(source)
+
+        ungated = []
+        for node in tree.body:
+            if not isinstance(node, ast.FunctionDef):
+                continue
+            is_route = any(
+                isinstance(d, ast.Call)
+                and isinstance(d.func, ast.Attribute)
+                and d.func.attr in ("get", "post")
+                for d in node.decorator_list
+            )
+            if not is_route:
+                continue
+            body = ast.get_source_segment(source, node) or ""
+            if node.name in self.EXEMPT:
+                continue
+            if any(marker in body for marker in self.EE_MARKERS) and "ee_gate" not in body:
+                ungated.append(node.name)
+
+        assert ungated == [], (
+            f"route handlers reaching Earth Engine with no budget charge: {ungated}. "
+            f"Wrap the Earth Engine work in deps.ee_gate(..., cost=C.ee_cost_units(mode, "
+            f"'<endpoint>')) -- an unmetered endpoint is a hole in the only quota guard "
+            f"the project has."
+        )
+
+    @pytest.mark.parametrize(
+        "path",
+        ["/api/yield", "/api/series", "/api/tiles", "/api/baseline", "/api/buildings"],
+    )
+    def test_each_endpoint_refuses_work_on_an_exhausted_budget(self, monkeypatch, path):
+        monkeypatch.setenv("SOLARIS_DAILY_EE_COST_BUDGET", "0.01")
+        get_settings.cache_clear()
+        limits_mod.reset_limits()
+        cache_mod.reset_cache()
+        install_fake_ee(monkeypatch)
+        world.register_world()
+        client = _client()
+
+        response = client.post(path, json=_request(baseline_mode="yearly", year=2023))
+        assert response.status_code == 503, response.text
+        assert response.json()["error"]["code"] == "budget_exhausted"
+
+    def test_the_endpoint_multipliers_are_relative_to_a_yield(self):
+        """
+        A multiplier of 1.0 for ``yield`` is what makes the others readable as
+        fractions of a known cost rather than as free-standing magic numbers.
+        """
+        from solaris.core import constants as C
+
+        assert C.EE_COST_ENDPOINT_MULTIPLIER["yield"] == 1.0
+        assert set(C.EE_COST_ENDPOINT_MULTIPLIER) == {"yield", "series", "baseline", "tiles"}
+        # series is the dearest because it reduces shadow per sub-period.
+        assert C.EE_COST_ENDPOINT_MULTIPLIER["series"] > 1.0
+
+    def test_an_unknown_endpoint_bills_as_a_yield_rather_than_free(self):
+        from solaris.core import constants as C
+
+        assert C.ee_cost_units("yearly", "not_an_endpoint") == C.ee_cost_units("yearly", "yield")
+
+    def test_buildings_is_charged_a_flat_cost(self):
+        """
+        It is one vector ``getInfo`` bounded by ``MAX_BUILDINGS`` and reduces
+        over no time window, so scaling its charge by the temporal mode would
+        be charging for work it does not do.
+        """
+        from solaris.core import constants as C
+
+        assert C.EE_COST_UNITS_BUILDINGS > 0
+        assert "buildings" not in C.EE_COST_ENDPOINT_MULTIPLIER
+
+
+class _LogCapture(logging.Handler):
+    """
+    Collects records straight off the ``solaris`` logger.
+
+    ``caplog`` cannot see them: ``configure_logging`` sets
+    ``propagate = False`` so one request produces exactly one line in Cloud
+    Logging rather than a duplicate via the root logger.
+    """
+
+    def __init__(self):
+        super().__init__()
+        self.records: list[logging.LogRecord] = []
+
+    def emit(self, record):
+        self.records.append(record)
+
+    def request_lines(self) -> list[dict]:
+        return [r.extra_fields for r in self.records if "status" in getattr(r, "extra_fields", {})]
+
+
+@contextlib.contextmanager
+def _capture_logs():
+    handler = _LogCapture()
+    log = logging.getLogger("solaris")
+    log.addHandler(handler)
+    try:
+        yield handler
+    finally:
+        log.removeHandler(handler)
+
+
+class TestRequestLogFields:
+    """
+    The per-request log line is the only window into a deployed instance, so
+    the fields it carries are a contract rather than a convenience.
+    """
+
+    def test_a_request_logs_both_call_count_and_cost(self, app_client):
+        """
+        Both, not either. Round-trip count is nearly constant across temporal
+        modes -- every /api/yield makes 12 -- while cost is what Earth Engine
+        bills, so a daily and a yearly query are indistinguishable in
+        ``ee_calls`` and differ 120-fold in ``ee_cost``.
+        """
+        cache_mod.reset_cache()
+        with _capture_logs() as logs:
+            app_client.post("/api/yield", json=_request(baseline_mode="yearly", year=2023))
+
+        lines = logs.request_lines()
+        assert lines, "no per-request log line was emitted"
+        fields = lines[-1]
+        for key in ("method", "path", "status", "duration_ms", "ee_calls", "ee_cost", "cache"):
+            assert key in fields, f"{key} missing from the request log line"
+        assert fields["ee_calls"] == 12
+        assert fields["ee_cost"] == 12.0  # yearly window, yield endpoint
+
+    def test_cost_does_not_leak_between_requests(self, app_client):
+        """
+        The counters are contextvars reset per request. A leak would make the
+        second request on a warm instance look more expensive than it was.
+        """
+        cache_mod.reset_cache()
+        with _capture_logs() as logs:
+            app_client.post("/api/yield", json=_request(baseline_mode="yearly", year=2023))
+            app_client.post(
+                "/api/yield", json=_request(baseline_mode="monthly", year=2023, month=6)
+            )
+
+        costs = [line["ee_cost"] for line in logs.request_lines()]
+        assert costs[-1] == 1.0, f"monthly window should cost 1 unit, got {costs[-1]}"
+
+    def test_a_cache_hit_costs_nothing(self, app_client):
+        """
+        A served-from-cache answer makes no Earth Engine call, so it must
+        charge nothing -- that is what makes the cache a cost control.
+        """
+        cache_mod.reset_cache()
+        app_client.post("/api/yield", json=_request())
+        with _capture_logs() as logs:
+            response = app_client.post("/api/yield", json=_request())
+
+        assert response.headers.get("X-Cache") == "HIT"
+        fields = logs.request_lines()[-1]
+        assert fields["ee_cost"] == 0.0
+        assert fields["ee_calls"] == 0

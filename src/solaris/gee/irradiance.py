@@ -40,12 +40,6 @@ from solaris.core import constants as _C
 ERA5_COLLECTION = "ECMWF/ERA5_LAND/DAILY_AGGR"
 ERA5_BAND = "surface_solar_radiation_downwards_sum"  # J/m^2 accumulated per day
 
-#: The hourly source this replaced. Kept named because the beam/diffuse split
-#: below still needs hourly data -- ERA5-Land carries no direct component, and
-#: plain ERA5 publishes no daily aggregate that does -- so the asymmetry is
-#: deliberate rather than an oversight.
-ERA5_HOURLY_GHI_COLLECTION = "ECMWF/ERA5_LAND/HOURLY"
-ERA5_HOURLY_GHI_BAND = "surface_solar_radiation_downwards_hourly"
 ERA5_SCALE_M = _C.ERA5_SCALE_M  # 0.1 deg at equator (~9 km native)
 _J_TO_KWH = 3_600_000.0
 
@@ -445,16 +439,3 @@ def sample_era5_beam_multi(
         else:
             out.append(0.60)
     return out
-
-
-# ---------------------------------------------------------------------------
-# Utility
-# ---------------------------------------------------------------------------
-
-
-def latest_complete_5y_range(today: date | None = None) -> tuple[int, int]:
-    """Latest complete 5-year range, e.g. (2021, 2025) if today is 2026."""
-    if today is None:
-        today = date.today()
-    end = today.year - 1
-    return end - 4, end

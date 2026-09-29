@@ -435,7 +435,7 @@ export default function Method() {
       <p>
         Derivations and citations for every coefficient:{' '}
         <a href="https://github.com" onClick={(e) => e.preventDefault()}>
-          docs/methodology.md
+          KNOWLEDGE_TRANSFER.md, section 4
         </a>{' '}
         in the repository.
       </p>

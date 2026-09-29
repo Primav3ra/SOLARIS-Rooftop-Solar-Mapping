@@ -11,7 +11,7 @@ starts passing, the strict xfail turns that into a failure, and whoever fixed it
 is forced to remove the marker. So the defect list cannot silently drift out of
 date in either direction.
 
-Defect references match docs/limitations.md and the plan:
+Defect references match KNOWLEDGE_TRANSFER.md §11 and the plan:
 
 * **D1** ``ee.Image.translate`` defaults to metres; the shadow and sky-view code
   passes pixel counts, so its offsets are 4x too short.

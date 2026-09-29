@@ -21,5 +21,3 @@ export const CITIES = [
   { key: 'guwahati', name: 'Guwahati', lat: 26.1445, lon: 91.7362, zone: 'high cloud, north-east' },
   { key: 'leh', name: 'Leh', lat: 34.1526, lon: 77.5771, zone: 'high altitude, low aerosol' },
 ];
-
-export const CITY_BY_KEY = Object.fromEntries(CITIES.map((c) => [c.key, c]));

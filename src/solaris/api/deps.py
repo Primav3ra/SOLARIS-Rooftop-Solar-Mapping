@@ -171,7 +171,7 @@ def earth_engine_hint(exc: Exception) -> str:
     return (
         "Earth Engine could not be initialised. Check that GEE_PROJECT_ID names "
         "a project with the Earth Engine API enabled and registered, and that "
-        "the running identity has access to it. See docs/deployment.md."
+        "the running identity has access to it. See KNOWLEDGE_TRANSFER.md §9."
     )
 
 
@@ -354,11 +354,13 @@ def ee_gate(n_calls: int = 1, cost: float | None = None):
     which is the only guard available -- the monthly EECU ceiling is a system
     limit with no console-side setting.
     """
-    from solaris.api.middleware import record_ee_calls
+    from solaris.api.middleware import record_ee_calls, record_ee_cost
     from solaris.core.limits import get_gate
 
+    charged = n_calls if cost is None else cost
     record_ee_calls(n_calls)
-    return get_gate().slot(n_calls=n_calls if cost is None else cost)
+    record_ee_cost(charged)
+    return get_gate().slot(n_calls=charged)
 
 
 def charge_computation(request: Any) -> None:

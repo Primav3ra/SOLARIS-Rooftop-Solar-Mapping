@@ -8,9 +8,9 @@
  * - **No dual axes, ever.** Value and error never share a chart; error goes in
  *   its own panel below, sharing the x-axis. A second y-axis lets a reader
  *   infer a relationship from a scaling choice.
- * - **Colour follows the entity, not its rank.** `seriesColour` maps a stable
- *   name to a stable hue, so a city does not change colour when the sort order
- *   changes.
+ * - **Colour follows the entity, not its rank.** Every dataset names its
+ *   palette entry, so re-sorting a chart reorders bars without recolouring
+ *   them.
  * - **A legend whenever there are two or more series.** One series needs no
  *   legend and gets none.
  * - **Categorical palettes stop at four.** Past roughly seven the eye cannot
@@ -89,21 +89,7 @@ export function categorical() {
 }
 
 /** Stable colour per entity name, so sorting never recolours a series. */
-export function seriesColour(name, index = 0) {
-  const colours = categorical();
-  if (!name) return colours[index % colours.length];
-  let hash = 0;
-  for (let i = 0; i < name.length; i += 1) hash = (hash * 31 + name.charCodeAt(i)) % 9973;
-  return colours[hash % colours.length];
-}
-
 /** A single sequential ramp for magnitude: low values light, high values dark. */
-export function rampColour(fraction) {
-  const ramp = palette().ramp;
-  const clamped = Math.max(0, Math.min(1, fraction));
-  return ramp[Math.min(ramp.length - 1, Math.round(clamped * (ramp.length - 1)))];
-}
-
 export function baseOptions({ showLegend = false, xTitle, yTitle } = {}) {
   const p = palette();
   return {

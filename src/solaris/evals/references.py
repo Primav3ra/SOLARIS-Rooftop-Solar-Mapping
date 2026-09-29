@@ -249,13 +249,6 @@ def save_cached(series: DailySeries, meta: dict) -> pathlib.Path:
     return path
 
 
-def missing_city_years(years: tuple[int, ...]) -> list[tuple[str, int]]:
-    """Which city-years are not yet cached."""
-    return [
-        (city.key, year) for city in CITIES for year in years if load_cached(city.key, year) is None
-    ]
-
-
 # ---------------------------------------------------------------------------
 # Daily precipitation, for the soiling model
 # ---------------------------------------------------------------------------

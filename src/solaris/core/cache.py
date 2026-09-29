@@ -22,7 +22,7 @@ raw floats are effectively unique per click and the hit rate would be
 approximately **zero**. Rounding to 4 decimal places (~11 m) fixes that, and is
 far below both ERA5's 9 km cell and the meaningful sensitivity of an AOI
 *centre*. This is a real approximation and is disclosed in
-``docs/methodology.md`` rather than hidden.
+``KNOWLEDGE_TRANSFER.md §4`` rather than hidden.
 
 **Version the key.** Prefixing with ``ALGO_VERSION`` and ``DATASET_VERSION``
 means a deploy that changes the physics automatically invalidates every stale
@@ -42,7 +42,6 @@ from __future__ import annotations
 import hashlib
 import json
 import threading
-import time
 from dataclasses import dataclass
 from datetime import date
 from typing import Any, Protocol
@@ -328,9 +327,3 @@ def store(
     if not coverage_complete:
         return
     get_cache().set(outcome.key, value, ttl_s)
-
-
-def cache_age_seconds(value: dict[str, Any]) -> float | None:
-    """Age of a cached payload, if it carries a timestamp."""
-    stamped = value.get("_cached_at")
-    return time.time() - stamped if isinstance(stamped, int | float) else None

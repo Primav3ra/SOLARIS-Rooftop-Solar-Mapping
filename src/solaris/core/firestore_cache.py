@@ -52,7 +52,7 @@ log = logging.getLogger("solaris.cache")
 FIELD_VALUE = "value"
 
 #: Document field holding the expiry instant. This is the field a Firestore TTL
-#: policy must be configured against (see ``docs/deployment.md``). Without that
+#: policy must be configured against (see ``KNOWLEDGE_TRANSFER.md §9``). Without that
 #: policy the documents are still *logically* expired by the check in
 #: :meth:`FirestoreCache.get`, they are simply never deleted -- so a missing
 #: policy costs storage, not correctness.

@@ -51,6 +51,8 @@ from typing import Any
 
 import ee
 
+from solaris.core.constants import MODIS_SCALE_M, TEMP_COEFF_PER_C
+
 # ---------------------------------------------------------------------------
 # Helpers shared across penalty classes
 # ---------------------------------------------------------------------------
@@ -398,9 +400,6 @@ class SkyViewFactor:
     #: obtained by substituting 16 m for 4 m.
     DIST_M: tuple[float, ...] = (4.0, 8.0, 16.0, 32.0, 64.0)
 
-    #: Retained for backwards compatibility with callers that report it.
-    DIST_PX: tuple[int, ...] = (1, 2, 4, 8, 16)
-
     @staticmethod
     def image(
         building_height: ee.Image,
@@ -485,10 +484,9 @@ class UHIPenalty:
     #: against 4.94 C at scale=100, a 78% swing from the request scale alone.
     BACKGROUND_KERNEL_M = 30_000.0
 
-    #: Retained so callers that report the window size keep working.
-    BACKGROUND_KERNEL_PX = 30
-
-    DEFAULT_TEMP_COEFF = -0.004  # /degC, crystalline silicon (IEC 60891)
+    #: /degC, crystalline silicon (IEC 60891). Taken from core.constants;
+    #: this was one of three independent copies of the same coefficient.
+    DEFAULT_TEMP_COEFF = TEMP_COEFF_PER_C
 
     #: Surface-to-air heat-island transfer coefficient (dimensionless).
     #:
@@ -502,7 +500,7 @@ class UHIPenalty:
     #: LST anomaly was used directly, which silently conflated the two and,
     #: combined with the temperature loss already inside PERFORMANCE_RATIO,
     #: produced two errors of opposite sign that neither cancelled nor was
-    #: measured. See docs/limitations.md (P4).
+    #: measured. See KNOWLEDGE_TRANSFER.md §11 (P4).
     SURFACE_TO_AIR_RATIO = 0.3
 
     @classmethod
@@ -525,7 +523,7 @@ class UHIPenalty:
         aoi: ee.Geometry,
         start_date: str,
         temp_coeff: float = DEFAULT_TEMP_COEFF,
-        scale_m: float = 1000.0,
+        scale_m: float = MODIS_SCALE_M,
         surface_to_air_ratio: float = SURFACE_TO_AIR_RATIO,
     ) -> dict[str, Any]:
         """
@@ -680,7 +678,7 @@ class SoilingPenalty:
         end_date_exclusive: str,
         *,
         cleaning_interval_days: int | None = None,
-        scale_m: float = 1000.0,
+        scale_m: float = MODIS_SCALE_M,
         sample_rain: bool = True,
         point: ee.Geometry | None = None,
     ) -> dict[str, Any]:
@@ -763,7 +761,7 @@ class SoilingPenalty:
         aoi: ee.Geometry,
         start_date: str,
         soiling_coefficient: float = SOILING_COEFFICIENT,
-        scale_m: float = 1000.0,
+        scale_m: float = MODIS_SCALE_M,
     ) -> dict[str, Any]:
         """
         Soiling retention from MAIAC AOD. Year comes from start_date; scale_m near MAIAC's

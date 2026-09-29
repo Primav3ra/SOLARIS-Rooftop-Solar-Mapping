@@ -4,7 +4,7 @@ name: Deploy to Cloud Run
 # service-account JSON key anywhere -- not in a secret, not in the repo.
 #
 # Two setup details are the usual failure points, both documented in
-# docs/deployment.md:
+# KNOWLEDGE_TRANSFER.md §9:
 #   1. The WIF provider MUST carry an attribute condition pinning
 #      assertion.repository to this repo. Without it the pool is usable by any
 #      GitHub repository, which is the most common misconfiguration.
@@ -62,7 +62,7 @@ jobs:
           if [ -n "$missing" ]; then
             echo "::error::Unset repository variables:$missing"
             echo "Set them under Settings > Secrets and variables > Actions > Variables."
-            echo "See docs/deployment.md for the exact values."
+            echo "See KNOWLEDGE_TRANSFER.md §9 for the exact values."
             exit 1
           fi
           echo "all required variables are set"

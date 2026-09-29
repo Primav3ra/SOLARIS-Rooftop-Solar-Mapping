@@ -306,12 +306,12 @@
     "shadow_penalty_percent": 3.65,
     "sky_view_factor_meta": {
       "n_azimuth": 8,
-      "sample_radii_px": [
-        1,
-        2,
-        4,
-        8,
-        16
+      "sample_radii_m": [
+        4.0,
+        8.0,
+        16.0,
+        32.0,
+        64.0
       ]
     },
     "soiling_penalty": {
