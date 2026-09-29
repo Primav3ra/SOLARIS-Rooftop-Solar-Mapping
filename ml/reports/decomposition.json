@@ -12,71 +12,72 @@
     "declared": "before training, in solaris/ml/decomposition.py",
     "min_skill_over_erbs": 0.1
   },
-  "generated_utc": "2026-09-14T15:04:13Z",
-  "n_samples": 3935,
+  "generated_utc": "2026-09-29T10:36:45Z",
+  "n_samples": 40004,
   "observed": {
-    "implied_mean_beam_fraction": 0.456,
-    "mean_diffuse_fraction": 0.544,
+    "implied_mean_beam_fraction": 0.4573,
+    "mean_diffuse_fraction": 0.5427,
     "production_fallback_beam_fraction": 0.6
   },
-  "reason": "gradient_boosting beats Erbs by 0.374 skill, clearing the 0.1 gate declared before training.",
+  "persisted": true,
+  "reason": "gradient_boosting beats Erbs by 0.429 skill, clearing the 0.1 gate declared before training.",
   "saved": {
     "artifact": "decomposition.joblib",
-    "version": "20260914"
+    "version": "20260929"
   },
   "schema_version": 1,
   "scores": [
     {
-      "mae": 0.20565,
-      "mbe": -0.13912,
-      "n": 396,
+      "mae": 0.22023,
+      "mbe": -0.16675,
+      "n": 4022,
       "name": "constant",
-      "rmse": 0.25398,
-      "rmse_ghi_weighted": 0.18905,
-      "skill_vs_erbs": -0.7809
+      "rmse": 0.26779,
+      "rmse_ghi_weighted": 0.19853,
+      "skill_vs_erbs": -0.936
     },
     {
-      "mae": 0.16042,
-      "mbe": 0.01494,
-      "n": 396,
+      "mae": 0.16524,
+      "mbe": -0.02194,
+      "n": 4022,
       "name": "climatology",
-      "rmse": 0.19581,
-      "rmse_ghi_weighted": 0.19354,
-      "skill_vs_erbs": -0.373
+      "rmse": 0.19831,
+      "rmse_ghi_weighted": 0.18304,
+      "skill_vs_erbs": -0.4337
     },
     {
-      "mae": 0.11022,
-      "mbe": 0.07703,
-      "n": 396,
+      "mae": 0.11115,
+      "mbe": 0.0701,
+      "n": 4022,
       "name": "erbs",
-      "rmse": 0.14261,
-      "rmse_ghi_weighted": 0.12381,
+      "rmse": 0.13832,
+      "rmse_ghi_weighted": 0.12416,
       "skill_vs_erbs": 0.0
     },
     {
-      "mae": 0.0862,
-      "mbe": 0.01418,
-      "n": 396,
+      "mae": 0.0777,
+      "mbe": -0.00037,
+      "n": 4022,
       "name": "ridge",
-      "rmse": 0.1097,
-      "rmse_ghi_weighted": 0.10064,
-      "skill_vs_erbs": 0.2308
+      "rmse": 0.09735,
+      "rmse_ghi_weighted": 0.09144,
+      "skill_vs_erbs": 0.2962
     },
     {
-      "mae": 0.07098,
-      "mbe": 0.01534,
-      "n": 396,
+      "mae": 0.0624,
+      "mbe": 7e-05,
+      "n": 4022,
       "name": "gradient_boosting",
-      "rmse": 0.08927,
-      "rmse_ghi_weighted": 0.08846,
-      "skill_vs_erbs": 0.374
+      "rmse": 0.07896,
+      "rmse_ghi_weighted": 0.07941,
+      "skill_vs_erbs": 0.4291
     }
   ],
   "spatial_leakage": [],
   "split": {
-    "n_test": 396,
-    "n_train": 1830,
-    "n_withheld": 1709,
+    "n_test": 4022,
+    "n_train": 18624,
+    "n_withheld": 17358,
     "note": "A test sample is from a held-out city AND a held-out year. Samples matching only one criterion are withheld from both sets, so neither leaks into the other.",
     "test_cities": [
       "bengaluru",

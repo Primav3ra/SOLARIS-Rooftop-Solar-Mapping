@@ -199,6 +199,31 @@ EXEMPT_PATHS = frozenset(
 )
 
 
+def is_rate_limited(path: str) -> bool:
+    """
+    Whether a request counts against the per-identity allowance.
+
+    Only the API surface does. The limiter used to apply to every path except
+    the meta endpoints above -- including ``/``, every ``/assets/*.js`` chunk,
+    the stylesheet and the Earth textures -- against an allowance of 30 per
+    minute and 300 per day. One landing-page load is a dozen or more of those
+    files, so a visitor who navigated a few times was answered 429 for the
+    site's own JavaScript and the page failed with "Failed to fetch
+    dynamically imported module". Observed locally, not predicted.
+
+    It was worse than it looks for this audience specifically. The allowance
+    is keyed by IP for any request without a session token, and static files
+    never carry one; carrier-grade NAT puts thousands of Indian mobile
+    subscribers behind a single address, so they shared 300 requests a day --
+    for loading the site, before anyone computed anything.
+
+    Static files and page routes cost nothing to serve and touch no quota.
+    What the allowance protects is Earth Engine, and every route that reaches
+    it is under ``/api/``.
+    """
+    return path.startswith("/api/") and path not in EXEMPT_PATHS
+
+
 class ObservabilityMiddleware(BaseHTTPMiddleware):
     """Assigns a request id, applies rate limits, and logs one line per request."""
 
@@ -215,7 +240,7 @@ class ObservabilityMiddleware(BaseHTTPMiddleware):
         try:
             attach_identity(request)
             identity, identity_kind = request_identity(request)
-            if request.url.path not in EXEMPT_PATHS:
+            if is_rate_limited(request.url.path):
                 check_rate_limit(identity)
             response = await call_next(request)
             status = response.status_code

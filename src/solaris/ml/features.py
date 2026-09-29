@@ -208,13 +208,22 @@ def build_samples(series, latitude: float, longitude: float) -> list[Sample]:
 
 
 def build_dataset(years: tuple[int, ...]) -> list[Sample]:
-    """Assemble every cached city-year into one sample list."""
-    from solaris.evals.references import CITIES, load_cached_hourly
+    """
+    Assemble every cached city-year into one sample list.
+
+    Prefers the dense training cache and falls back to the 288-step
+    climatology. The climatology is twelve mid-month days per year, which was
+    the original training set and gave 74 usable rows per city-year -- almost
+    no weather diversity for a model whose primary predictor is the clearness
+    index. The dense cache samples every third day, so the kt distribution the
+    model fits is much closer to the one it will meet.
+    """
+    from solaris.evals.references import CITIES, load_cached_hourly, load_cached_training
 
     samples: list[Sample] = []
     for city in CITIES:
         for year in years:
-            series = load_cached_hourly(city.key, year)
+            series = load_cached_training(city.key, year) or load_cached_hourly(city.key, year)
             if series is None or series.n_steps == 0:
                 continue
             samples.extend(build_samples(series, city.lat, city.lon))

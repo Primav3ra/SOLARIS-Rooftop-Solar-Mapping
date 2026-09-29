@@ -45,14 +45,33 @@ class Envelope:
     minimum: list[float]
     maximum: list[float]
 
+    #: Features deliberately excluded from the gate.
+    #:
+    #: ``abs_latitude`` is a *geographic* coordinate, and the holdout is
+    #: spatial by design -- so the training range can never cover the cities
+    #: the model is meant to generalise to. Gating on it made that
+    #: contradiction concrete: the fitted floor was 13.0827 deg, exactly
+    #: Chennai's latitude, so Bengaluru at 12.9716 fell outside and was sent
+    #: to Erbs on every request. Every city south of it -- Coimbatore, Kochi,
+    #: Madurai, Thiruvananthapuram -- went the same way. A model that refuses
+    #: peninsular India is not falling back safely, it is simply absent.
+    #:
+    #: The physical predictors stay gated. Those are the ones where an
+    #: out-of-range value means a genuinely unfamiliar atmospheric state.
+    UNGATED_FEATURES = frozenset({"abs_latitude"})
+
     def contains(self, values: list[float], tolerance: float = 0.05) -> bool:
         """
-        True if every feature is inside its training range, plus a small margin.
+        True if every gated feature is inside its training range, plus a margin.
 
         The margin avoids rejecting a value that is only marginally outside --
         the boundary is a sample artifact, not a physical limit.
         """
-        for value, low, high in zip(values, self.minimum, self.maximum, strict=True):
+        for name, value, low, high in zip(
+            self.feature_names, values, self.minimum, self.maximum, strict=True
+        ):
+            if name in self.UNGATED_FEATURES:
+                continue
             span = high - low
             slack = span * tolerance if span > 0 else abs(high) * tolerance + 1e-9
             if value < low - slack or value > high + slack:
@@ -187,20 +206,54 @@ def predict_diffuse_fraction(samples) -> Prediction:
 
     if model is not None and manifest is not None:
         envelope = Envelope(**manifest.envelope) if manifest.envelope else None
-        in_domain = envelope is None or all(envelope.contains(s.as_features()) for s in samples)
-        if in_domain:
+        # Per sample, not per batch.
+        #
+        # This was `all(...)` over the batch, which is the wrong granularity
+        # for the way the API calls it: a request evaluates the whole set of
+        # sun positions for a window at once, and the lowest of those sits at
+        # the 2 degree altitude floor -- sin_elevation about 0.035 against a
+        # training floor of 0.122. One such position sent all thirty-one to
+        # Erbs, so the model would have been dead on arrival in production
+        # while every offline test still passed.
+        #
+        # Routing per sample uses the model where it is competent and Erbs
+        # where it is not, which is what the fallback chain was for.
+        in_domain = (
+            [True] * len(samples)
+            if envelope is None
+            else [envelope.contains(s.as_features()) for s in samples]
+        )
+        n_out = in_domain.count(False)
+        if n_out < len(samples):
             try:
                 import numpy as np
 
-                matrix = np.array([s.as_features() for s in samples], dtype=float)
-                values = [float(min(max(v, 0.0), 1.0)) for v in model.predict(matrix)]
+                erbs = ErbsModel()
+                erbs_values = erbs.predict(samples)
+                matrix = np.array(
+                    [s.as_features() for s, ok in zip(samples, in_domain, strict=True) if ok],
+                    dtype=float,
+                )
+                predicted = iter(model.predict(matrix))
+                values = [
+                    float(min(max(next(predicted), 0.0), 1.0)) if ok else erbs_values[i]
+                    for i, ok in enumerate(in_domain)
+                ]
+                share = n_out / len(samples)
+                detail = (
+                    f"{manifest.kind}, test RMSE {manifest.test_rmse:.4f}, "
+                    f"skill over Erbs {manifest.skill_vs_erbs:+.3f}"
+                )
+                if n_out:
+                    detail += (
+                        f". {n_out} of {len(samples)} inputs ({share:.0%}) were outside "
+                        f"the training envelope and used Erbs instead; a tree does not "
+                        f"extrapolate, it returns the nearest leaf."
+                    )
                 return Prediction(
                     values=values,
                     source=f"model:{manifest.name}@{manifest.version}",
-                    detail=(
-                        f"{manifest.kind}, test RMSE {manifest.test_rmse:.4f}, "
-                        f"skill over Erbs {manifest.skill_vs_erbs:+.3f}"
-                    ),
+                    detail=detail,
                 )
             except Exception:
                 pass  # fall through to Erbs
@@ -210,7 +263,7 @@ def predict_diffuse_fraction(samples) -> Prediction:
                 values=erbs.predict(samples),
                 source="erbs",
                 detail=(
-                    "Input is outside the model's training envelope, so the "
+                    "Every input was outside the model's training envelope, so the "
                     "published Erbs correlation was used instead. A tree model "
                     "does not extrapolate -- it returns the nearest leaf -- so "
                     "an out-of-domain prediction would be confident and "

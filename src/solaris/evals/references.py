@@ -474,6 +474,83 @@ class HourlySeries:
         return total_wh / 1000.0
 
 
+#: Day stride for the dense training cache: every third day of the year.
+#:
+#: The 288-step climatology above samples twelve mid-month days. That is the
+#: right shape for a discretisation check and the wrong shape for fitting a
+#: model whose primary predictor is the clearness index -- twelve days a year
+#: carry almost no weather diversity, so the kt distribution the model learns
+#: is not the one it will meet. Every third day spans 122 days, every season
+#: and every sky state, for about 61 KB per city-year.
+#:
+#: Whole days are kept rather than scattered hours, because ``kt_persistence``
+#: is defined against the day's own mean.
+TRAINING_DAY_STRIDE = 3
+
+
+@dataclass
+class TrainingSeries:
+    """
+    Dense hourly GHI and diffuse for model fitting. Daylight hours only.
+
+    Deliberately separate from :class:`HourlySeries`: that type carries a
+    monthly-diurnal climatology and its ``annual_ghi_kwh_m2`` scales each
+    mid-month day by its month's length, which would be wrong here. Two
+    purposes, two types.
+    """
+
+    city: str
+    year: int
+    ghi: dict[str, float] = field(default_factory=dict)
+    diffuse: dict[str, float] = field(default_factory=dict)
+
+    @property
+    def stamps(self) -> list[str]:
+        return sorted(self.ghi)
+
+    @property
+    def n_steps(self) -> int:
+        return len(self.ghi)
+
+
+def training_cache_path(city: str, year: int) -> pathlib.Path:
+    return CACHE_DIR / "nasa_power_train" / f"{city}_{year}.json"
+
+
+def load_cached_training(city: str, year: int) -> TrainingSeries | None:
+    path = training_cache_path(city, year)
+    if not path.exists():
+        return None
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    return TrainingSeries(
+        city=city,
+        year=year,
+        ghi=payload["ghi"],
+        diffuse=payload.get("diffuse", {}),
+    )
+
+
+def save_cached_training(series: TrainingSeries, meta: dict) -> pathlib.Path:
+    path = training_cache_path(series.city, series.year)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "city": series.city,
+                "year": series.year,
+                "day_stride": TRAINING_DAY_STRIDE,
+                "ghi": series.ghi,
+                "diffuse": series.diffuse,
+                **meta,
+            },
+            indent=0,
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
+    return path
+
+
 def hourly_cache_path(city: str, year: int) -> pathlib.Path:
     return CACHE_DIR / "nasa_power_hourly" / f"{city}_{year}.json"
 

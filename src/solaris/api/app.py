@@ -395,6 +395,65 @@ def ready() -> dict[str, Any]:
     return out
 
 
+def _beam_fraction_for(
+    *,
+    centroid,
+    start_date: str,
+    end_date_exclusive: str,
+    latitude_deg: float,
+    ghi_kwh_m2: float,
+    solar_positions,
+) -> tuple[float, dict[str, Any]]:
+    """
+    Beam fraction for a window, corrected by the decomposition model.
+
+    ERA5 supplies the raw split; the learned model then corrects it, falling
+    back to Erbs per sample and to ERA5 as a whole if the chain cannot answer.
+    Both figures are returned so the response can show what the correction did
+    rather than presenting the corrected value as if it were measured.
+
+    ERA5 is documented to overestimate the direct component with the error
+    growing in aerosol load, which is India's regime; the reference mean over
+    the evaluation set is 0.457 against the 0.60 this code used to fall back
+    to. The correction is therefore expected to move beam fraction down, and
+    with it to reduce the shadow penalty and raise the sky-view one.
+    """
+    from solaris.ml.serving import beam_fraction_for_window
+
+    raw = sample_era5_beam_fraction_at_point(centroid, start_date, end_date_exclusive)
+    era5_beam = float(raw["beam_fraction"])
+    try:
+        corrected = beam_fraction_for_window(
+            era5_beam_fraction=era5_beam,
+            era5_source=str(raw.get("source", "era5")),
+            ghi_kwh_m2=ghi_kwh_m2,
+            latitude_deg=latitude_deg,
+            start_date=start_date,
+            end_date_exclusive=end_date_exclusive,
+            solar_positions=solar_positions,
+        )
+    except Exception:
+        # The physics path must not depend on the ML extra being installed, or
+        # on a model artifact being present. A failure here degrades to the
+        # ERA5 figure and says so.
+        middleware.logger.exception("decomposition correction failed; using the ERA5 beam fraction")
+        return era5_beam, {**raw, "decomposition_source": "unavailable"}
+
+    return corrected.beam_fraction, {
+        **raw,
+        "beam_fraction": corrected.beam_fraction,
+        # The raw dict carries its own diffuse_fraction. Leaving it meant the
+        # response reported a corrected beam beside an uncorrected diffuse, and
+        # the two no longer summed to one.
+        "diffuse_fraction": round(1.0 - corrected.beam_fraction, 4),
+        "era5_beam_fraction": round(era5_beam, 4),
+        "era5_diffuse_fraction": round(1.0 - era5_beam, 4),
+        "decomposition_source": corrected.source,
+        "decomposition_detail": corrected.detail,
+        "clearness_index": corrected.clearness_index,
+    }
+
+
 @app.post("/api/baseline")
 def compute_baseline(req: BaselineRequest, request: Request) -> dict[str, Any]:
     """
@@ -574,8 +633,14 @@ def tiles(req: TilesRequest) -> dict[str, Any]:
         # Scalars needed for net irradiance (same as /api/yield)
         ghi_info = sample_era5_period_ghi_kwh_m2_at_point(centroid, s, e, scale_m=ERA5_SCALE_M)
         regional_ghi_kwh_m2_period = float(ghi_info["value"])
-        beam_info = sample_era5_beam_fraction_at_point(centroid, s, e)
-        beam_fraction = float(beam_info["beam_fraction"])
+        beam_fraction, _beam_info = _beam_fraction_for(
+            centroid=centroid,
+            start_date=s,
+            end_date_exclusive=e,
+            latitude_deg=lat_deg,
+            ghi_kwh_m2=regional_ghi_kwh_m2_period,
+            solar_positions=solar_positions,
+        )
         uhi_info = UHIPenalty.stats(aoi, s)
         soiling_info = SoilingPenalty.stats(aoi, s)
 
@@ -628,17 +693,36 @@ def tiles(req: TilesRequest) -> dict[str, Any]:
                 .subtract(UHIPenalty.K_TO_C_OFFSET)
                 .rename("LST_celsius")
             )
-            # Metres, matching UHIPenalty.stats. A pixel-denominated kernel
-            # resolves against the *request* projection, so at tile-pyramid
-            # scales this window spanned hundreds of kilometres rather than 30
-            # -- the same defect that was fixed in the reduction path but left
-            # behind here, which is why the map and the number disagreed.
-            background = lst.focal_mean(
+            # Pinned to MODIS' native 1 km before the focal window, and this
+            # is what makes the layer render at all.
+            #
+            # Denominating the kernel in metres fixed the *size* of the window
+            # but not the cost of it: Earth Engine converts metres to pixels
+            # using the projection of the request, and a tile request at
+            # street zoom is roughly metre-scale. A 30 km radius then asks for
+            # a kernel some 30,000 pixels across, which Earth Engine will not
+            # compute -- so the heat-island overlay came back empty at exactly
+            # the zoom anyone would look at it, while the reduction path was
+            # fine because reduceRegion pins scale=1 km itself.
+            #
+            # Reprojecting first makes the kernel 30 pixels at 1 km, the same
+            # window the reported number uses. It also renders honestly: the
+            # overlay is visibly blocky at 1 km because the data is 1 km, and
+            # an area of interest smaller than a single MODIS cell shows one
+            # flat value, which is the truth about this measurement rather
+            # than a smooth field implying detail that was never there.
+            lst_native = lst.reproject(crs="EPSG:4326", scale=C.MODIS_SCALE_M)
+            background = lst_native.focal_mean(
                 radius=UHIPenalty.BACKGROUND_KERNEL_M,
                 kernelType="circle",
                 units="meters",
             )
-            img = lst.subtract(background).rename("delta_t_uhi_celsius").clip(aoi).clamp(-3.0, 8.0)
+            img = (
+                lst_native.subtract(background)
+                .rename("delta_t_uhi_celsius")
+                .clip(aoi)
+                .clamp(-3.0, 8.0)
+            )
             # Typical Indian UHI anomalies: ~2-6 degC (but allow a bit wider).
             # Avoid the bright yellow/orange used by irradiance visualizations; keep it cleaner.
             vis = {"min": -3.0, "max": 8.0, "palette": ["2563eb", "22c55e", "a855f7", "ef4444"]}
@@ -831,8 +915,14 @@ def compute_yield(req: YieldRequest, request: Request) -> Response:
 
         # Beam fraction: direct / GHI from ERA5 HOURLY -- used to correct shadow losses.
         # Only the beam component is blocked by shadows; diffuse is governed by SVF below.
-        beam_info = sample_era5_beam_fraction_at_point(centroid, s, e)
-        beam_fraction = float(beam_info["beam_fraction"])
+        beam_fraction, beam_info = _beam_fraction_for(
+            centroid=centroid,
+            start_date=s,
+            end_date_exclusive=e,
+            latitude_deg=lat_deg,
+            ghi_kwh_m2=regional_ghi_kwh_m2_period,
+            solar_positions=solar_positions,
+        )
 
         # Sky View Factor: per-pixel fraction of the diffuse sky still visible from the
         # rooftop after neighbouring buildings occlude part of the hemisphere. Diffuse
@@ -1058,6 +1148,15 @@ def compute_yield(req: YieldRequest, request: Request) -> Response:
                     "shade_fraction": round(shade_fraction, 5),
                     "shade_percent": round(shade_fraction * 100.0, 2),
                     "shade_area_m2": round(shade_area_m2, 2),
+                    # Whether the sun was up at all in this bucket.
+                    #
+                    # data_quality already reported the empty buckets, but the
+                    # interval itself did not carry the distinction, so a chart
+                    # had no way to draw "no sun" differently from "no shade" --
+                    # both arrive as 0.0. The dashboard caption claimed it greyed
+                    # those bars and could not have. bucket_band only gains a key
+                    # when the bucket had a sun position above the altitude floor.
+                    "sun_above_horizon": bucket_band_name is not None,
                 }
             )
 
@@ -1177,7 +1276,15 @@ def compute_yield(req: YieldRequest, request: Request) -> Response:
             "shade_intervals": shade_intervals,
             "beam_fraction": beam_fraction,
             "diffuse_fraction": beam_info["diffuse_fraction"],
-            "beam_fraction_source": beam_info["source"],
+            "beam_fraction_source": beam_info.get("decomposition_source") or beam_info["source"],
+            # What the correction did, alongside what it corrected. A reader
+            # who cannot see the raw figure cannot tell a corrected number from
+            # a measured one.
+            "era5_beam_fraction": beam_info.get("era5_beam_fraction"),
+            "era5_diffuse_fraction": beam_info.get("era5_diffuse_fraction"),
+            "era5_beam_fraction_source": beam_info["source"],
+            "decomposition_detail": beam_info.get("decomposition_detail"),
+            "clearness_index": beam_info.get("clearness_index"),
             "mean_sky_view_factor": (
                 round(float(mean_sky_view_factor), 5) if mean_sky_view_factor is not None else None
             ),
@@ -1317,6 +1424,34 @@ def compute_series(req: YieldRequest, request: Request) -> dict[str, Any]:
         windows = [(s, e) for (s, e, _pos) in items]
         ghi_list = sample_era5_period_ghi_multi(centroid, windows, scale_m=ERA5_SCALE_M)
         beam_list = sample_era5_beam_multi(centroid, windows, scale_m=_ERA5_HOURLY_SCALE_M)
+
+        # Correct each sub-period with the decomposition model, using that
+        # sub-period's own sun positions and clearness index.
+        #
+        # Not optional: this endpoint's contract is that a point matches what
+        # /api/yield reports for the same sub-window. Correcting the yield and
+        # leaving the curve on raw ERA5 would break that visibly -- the chart
+        # would no longer sum to the headline figure.
+        from solaris.ml.serving import beam_fraction_for_window
+
+        corrected_beams = []
+        for i, (sub_s, sub_e, sub_pos) in enumerate(items):
+            try:
+                corrected_beams.append(
+                    beam_fraction_for_window(
+                        era5_beam_fraction=float(beam_list[i]),
+                        era5_source="era5_hourly",
+                        ghi_kwh_m2=float(ghi_list[i]),
+                        latitude_deg=lat_deg,
+                        start_date=sub_s,
+                        end_date_exclusive=sub_e,
+                        solar_positions=sub_pos,
+                    ).beam_fraction
+                )
+            except Exception:
+                middleware.logger.exception("decomposition correction failed for a sub-period")
+                corrected_beams.append(float(beam_list[i]))
+        beam_list = corrected_beams
 
         # SVF*area doesn't change month to month, so grab it once.
         svf_area = float(

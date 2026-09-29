@@ -28,15 +28,19 @@ from solaris.evals.references import (
     NASA_POWER_PRECIP_PARAM,
     NASA_POWER_TIME_STANDARD,
     NASA_POWER_URL,
+    TRAINING_DAY_STRIDE,
     DailySeries,
     HourlySeries,
     PrecipSeries,
+    TrainingSeries,
     load_cached,
     load_cached_hourly,
     load_cached_precip,
+    load_cached_training,
     save_cached,
     save_cached_hourly,
     save_cached_precip,
+    save_cached_training,
 )
 
 #: Be a good citizen of a free service.
@@ -143,6 +147,65 @@ def fetch_nasa_power_precip(city_key: str, year: int) -> PrecipSeries:
     return series
 
 
+def fetch_nasa_power_training(city_key: str, year: int) -> TrainingSeries:
+    """
+    Fetch one city-year of dense hourly irradiance for model fitting.
+
+    One request for the whole year, then thinned on the way to disk: every
+    ``TRAINING_DAY_STRIDE``-th day, daylight hours only, GHI and diffuse only.
+    That is 61 KB per city-year against roughly a megabyte for the raw year,
+    and it yields about 1,500 usable rows per city-year instead of the 74 the
+    twelve-day climatology gives.
+
+    ``time-standard=UTC`` is passed explicitly because the endpoint defaults to
+    local solar time -- see NASA_POWER_TIME_STANDARD for why that matters.
+    """
+    from datetime import date
+
+    city = CITY_BY_KEY[city_key]
+    query = urllib.parse.urlencode(
+        {
+            "parameters": "ALLSKY_SFC_SW_DWN,ALLSKY_SFC_SW_DIFF",
+            "community": "RE",
+            "latitude": city.lat,
+            "longitude": city.lon,
+            "start": f"{year}0101",
+            "end": f"{year}1231",
+            "time-standard": NASA_POWER_TIME_STANDARD,
+            "format": "JSON",
+        }
+    )
+    payload = _get_json(f"{NASA_POWER_HOURLY_URL}?{query}")
+    parameters = payload["properties"]["parameter"]
+    raw_ghi = parameters.get("ALLSKY_SFC_SW_DWN", {})
+    raw_diffuse = parameters.get("ALLSKY_SFC_SW_DIFF", {})
+
+    def on_stride(stamp: str) -> bool:
+        day = date(int(stamp[0:4]), int(stamp[4:6]), int(stamp[6:8]))
+        return (day.timetuple().tm_yday - 1) % TRAINING_DAY_STRIDE == 0
+
+    # Night hours carry no clearness index, and the -999 fill value must be
+    # dropped rather than read as zero.
+    ghi = {
+        stamp: round(value, 1) for stamp, value in raw_ghi.items() if value > 0 and on_stride(stamp)
+    }
+    diffuse = {
+        stamp: round(value, 1)
+        for stamp, value in raw_diffuse.items()
+        if stamp in ghi and value > -900
+    }
+
+    series = TrainingSeries(city=city_key, year=year, ghi=ghi, diffuse=diffuse)
+    save_cached_training(
+        series,
+        {
+            "source": "NASA POWER hourly point API, full year thinned by day stride",
+            "time_standard": NASA_POWER_TIME_STANDARD,
+        },
+    )
+    return series
+
+
 def fetch_nasa_power_hourly(city_key: str, year: int) -> HourlySeries:
     """
     Fetch a monthly-diurnal climatology: the 15th of each month, hourly, UTC.
@@ -225,21 +288,39 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="fetch daily precipitation for the soiling model",
     )
+    parser.add_argument(
+        "--train",
+        action="store_true",
+        help="fetch the dense hourly cache used to fit the decomposition model",
+    )
     args = parser.parse_args(argv)
 
-    if args.hourly and args.precip:
-        parser.error("--hourly and --precip write different caches; run them separately")
+    selected = [
+        name
+        for name, on in (
+            ("--hourly", args.hourly),
+            ("--precip", args.precip),
+            ("--train", args.train),
+        )
+        if on
+    ]
+    if len(selected) > 1:
+        parser.error(f"{' and '.join(selected)} write different caches; run them separately")
 
-    kind = "hourly" if args.hourly else "precip" if args.precip else "daily"
+    kind = (
+        "hourly" if args.hourly else "precip" if args.precip else "train" if args.train else "daily"
+    )
     loaders = {
         "daily": load_cached,
         "hourly": load_cached_hourly,
         "precip": load_cached_precip,
+        "train": load_cached_training,
     }
     fetchers = {
         "daily": fetch_nasa_power,
         "hourly": fetch_nasa_power_hourly,
         "precip": fetch_nasa_power_precip,
+        "train": fetch_nasa_power_training,
     }
 
     keys = args.cities or [c.key for c in CITIES]
@@ -261,6 +342,12 @@ def main(argv: list[str] | None = None) -> int:
                     f"[ok]   {key:<11} {year}  {series.n_steps:>3} steps  "
                     f"annual GHI {series.annual_ghi_kwh_m2():>7.1f} kWh/m2  "
                     f"daytime air {series.mean_daytime_air_temp_c():>5.1f} C"
+                )
+            elif kind == "train":
+                days = len({stamp[:8] for stamp in series.ghi})
+                print(
+                    f"[ok]   {key:<11} {year}  {series.n_steps:>5} daylight hours "
+                    f"across {days:>3} days"
                 )
             elif kind == "precip":
                 print(

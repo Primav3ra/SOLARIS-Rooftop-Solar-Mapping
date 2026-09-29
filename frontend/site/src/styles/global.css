@@ -43,6 +43,37 @@
   --warn: #d98324;
   --bad: #c4453b;
 
+  /*
+   * Categorical slots, in fixed order. Computed, not chosen by eye.
+   *
+   * The previous set reused the UI accent, the sky accent and two severity
+   * colours. Running the palette validator against the dark surface returned
+   * two hard failures: the amber and sky sat outside the OKLCH lightness band
+   * (0.799 and 0.695 against a 0.48-0.67 window), and the green/red pair
+   * separated by only dE 6.9 under deuteranopia -- which is legal only
+   * alongside a secondary encoding, and those charts had none. A reader with
+   * the commonest colour-vision deficiency could not separate heat island
+   * from soiling.
+   *
+   * These four pass every check in both modes: worst adjacent pair dE 9.4
+   * under deuteranopia, dE 20.9 for normal vision, all four in band, all four
+   * above 3:1 against the surface. The one light-mode warning -- amber at
+   * 2.99:1 -- is discharged by the direct labels and the table view that every
+   * figure now carries.
+   *
+   * Hue also carries meaning here rather than being arbitrary: dust is amber,
+   * sky is blue, heat is red.
+   */
+  --cat-shadow: #199e70;
+  --cat-skyview: #3987e5;
+  --cat-heat: #d95926;
+  --cat-soiling: #c98500;
+
+  /* Motion. One duration for state changes, one for entrances. */
+  --ease-out: cubic-bezier(0.22, 0.61, 0.36, 1);
+  --dur-swap: 200ms;
+  --dur-enter: 420ms;
+
   --bg: var(--ink-900);
   --bg-raised: var(--ink-800);
   --bg-inset: var(--ink-700);
@@ -77,6 +108,11 @@
   --text-faint: var(--ink-400);
   --accent: var(--sun-600);
   --shadow: 0 1px 2px rgb(0 0 0 / 0.06), 0 8px 24px rgb(0 0 0 / 0.08);
+  /*
+   * The categorical slots are deliberately NOT re-stepped for light mode. They
+   * validate against both surfaces, and an entity that changed colour with the
+   * theme would break the one rule the palette exists to keep.
+   */
 }
 
 * { box-sizing: border-box; }
@@ -222,6 +258,19 @@ tbody tr:hover { background: color-mix(in srgb, var(--accent) 6%, transparent); 
 .figure__title { font-weight: 600; font-size: 1rem; }
 .figure__canvas { position: relative; height: 320px; }
 .figure__canvas--tall { height: 420px; }
+.figure__finding {
+  margin: 0.75rem 0 0.35rem;
+  font-size: 0.95rem;
+  line-height: 1.5;
+  color: var(--text);
+  max-width: 68ch;
+}
+
+.figure__finding strong {
+  color: var(--accent);
+  font-weight: 650;
+}
+
 .figure__caption { font-size: 0.88rem; color: var(--text-dim); margin-top: 0.7rem; max-width: 72ch; }
 
 /* Every chart has a reachable table view. It is what an academic reader
@@ -391,7 +440,28 @@ input[type='number'], input[type='text'], select {
   border-radius: 5px;
   overflow: hidden;
 }
-.ranking__fill { height: 100%; background: var(--accent); border-radius: 5px; }
+.ranking__fill {
+  height: 100%;
+  background: var(--accent);
+  border-radius: 5px;
+  /* Widths animate, so dragging a sandbox slider visibly re-sizes -- and
+     re-ranks -- the losses rather than snapping between states. */
+  transition: width 320ms var(--ease-out);
+}
+.ranking__label {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+.ranking__swatch {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+}
+@media (prefers-reduced-motion: reduce) {
+  .ranking__fill { transition: none; }
+}
 .ranking__value { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
 .ranking__unit { color: var(--text-faint); font-size: 0.8em; }
 .ranking__pct {
@@ -445,3 +515,515 @@ input[type='number'], input[type='text'], select {
   color: var(--text-faint); font: inherit; font-size: 0.8rem; cursor: pointer;
 }
 .history__clear:hover { color: var(--text); }
+
+/* ---------------------------------------------------------------------------
+ * Motion
+ *
+ * One orchestrated moment, not an effect on every element. A result arriving
+ * is the only thing on this page worth animating: it is the answer to the
+ * question the visitor asked, and a hard swap makes it easy to miss that
+ * anything changed. Everything else -- hovers, page transitions, section
+ * reveals -- is left still on purpose.
+ *
+ * The recompute case matters more than first paint. Changing one input and
+ * re-running returns a page that looks almost identical, because most of the
+ * numbers barely move; without the swap there is no signal that the figures
+ * on screen are now the new ones.
+ * ------------------------------------------------------------------------- */
+
+@keyframes result-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.result-enter > * {
+  animation: result-in var(--dur-enter) var(--ease-out) backwards;
+}
+
+/* A short stagger so the eye lands on the headline figure first and the
+   supporting charts settle after it, rather than everything arriving at once. */
+.result-enter > *:nth-child(1) { animation-delay: 0ms; }
+.result-enter > *:nth-child(2) { animation-delay: 45ms; }
+.result-enter > *:nth-child(3) { animation-delay: 90ms; }
+.result-enter > *:nth-child(4) { animation-delay: 135ms; }
+.result-enter > *:nth-child(n + 5) { animation-delay: 170ms; }
+
+/* Recompute: hold the previous render rather than flashing a skeleton, so the
+   layout never jumps and the old numbers stay readable until the new ones land. */
+.result-stale {
+  opacity: 0.45;
+  transition: opacity var(--dur-swap) var(--ease-out);
+  pointer-events: none;
+}
+
+/* The figure is the one hover worth having: it says the marks are live. */
+.figure__canvas canvas {
+  transition: opacity var(--dur-swap) var(--ease-out);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .result-enter > *,
+  .result-enter > *:nth-child(n) {
+    animation: none;
+  }
+  .result-stale {
+    transition: none;
+  }
+}
+
+/* ---------------------------------------------------------------------------
+ * Hero
+ * ------------------------------------------------------------------------- */
+
+.hero {
+  --hero-scroll: 0;
+  position: relative;
+  min-height: min(84vh, 760px);
+  display: grid;
+  align-items: center;
+  overflow: hidden;
+  isolation: isolate;
+}
+
+/* The planet drifts down at 30% of scroll speed and dims as it leaves, so the
+   hero reads as a layer the page moves past rather than a flat banner. */
+.hero__scene {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  transform: translate3d(0, calc(var(--hero-scroll) * 0.3px), 0);
+  opacity: calc(1 - var(--hero-scroll) / 900);
+  will-change: transform, opacity;
+}
+
+.hero__scrim {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+  background: linear-gradient(
+    to right,
+    color-mix(in srgb, var(--bg) 86%, transparent) 0%,
+    color-mix(in srgb, var(--bg) 58%, transparent) 44%,
+    transparent 72%
+  );
+}
+
+.hero__content {
+  position: relative;
+  z-index: 2;
+  padding-top: 3rem;
+  padding-bottom: 5rem;
+}
+
+/* The poster occupies the globe's own position, so the handoff is a cross-fade
+   in place. Wide viewports: right of the copy. Narrow: centred and lower. */
+.hero__poster {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding-left: 34%;
+  transition: opacity 900ms var(--ease-out);
+}
+
+.hero__poster--hidden {
+  opacity: 0;
+}
+
+.hero__poster-disc {
+  width: min(52vmin, 460px);
+  aspect-ratio: 1;
+  border-radius: 50%;
+  background: radial-gradient(
+    circle at 64% 36%,
+    #3a7fb0 0%,
+    #174b6c 34%,
+    #082236 66%,
+    #030d16 100%
+  );
+  box-shadow:
+    0 0 0 1px rgb(90 169 230 / 0.28),
+    0 0 90px 10px rgb(79 150 217 / 0.16),
+    inset -40px -26px 80px rgb(0 0 0 / 0.7);
+}
+
+@media (max-aspect-ratio: 23 / 20) {
+  .hero__poster {
+    padding-left: 0;
+    padding-top: 38vh;
+  }
+  .hero__scrim {
+    background: linear-gradient(
+      to bottom,
+      color-mix(in srgb, var(--bg) 84%, transparent) 0%,
+      color-mix(in srgb, var(--bg) 66%, transparent) 55%,
+      transparent 100%
+    );
+  }
+}
+
+.hero__legend {
+  position: absolute;
+  z-index: 2;
+  right: clamp(1rem, 4vw, 3rem);
+  bottom: 3.1rem;
+  max-width: 34ch;
+  margin: 0;
+  font-size: 0.78rem;
+  line-height: 1.5;
+  color: var(--text-faint);
+  text-align: right;
+}
+
+.hero__legend-dot {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  margin-right: 0.45rem;
+  border-radius: 50%;
+  background: #ffc247;
+  box-shadow: 0 0 8px 2px rgb(255 168 31 / 0.55);
+  vertical-align: 0.05em;
+}
+
+@media (max-width: 720px) {
+  .hero__legend {
+    display: none;
+  }
+}
+
+/* The telemetry stream: real records from the validation report, faint enough
+   to read as instrumentation beneath the page rather than content competing
+   with it. Opacity well under the text tokens, so it never passes for copy. */
+.hero__telemetry {
+  position: absolute;
+  z-index: 1;
+  left: 0;
+  right: 0;
+  bottom: 0.9rem;
+  overflow: hidden;
+  opacity: 0.2;
+  pointer-events: none;
+  mask-image: linear-gradient(to right, transparent, #000 12%, #000 88%, transparent);
+  -webkit-mask-image: linear-gradient(to right, transparent, #000 12%, #000 88%, transparent);
+}
+
+.hero__telemetry-track {
+  display: flex;
+  width: max-content;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  letter-spacing: 0.04em;
+  color: var(--sky-400);
+  animation: telemetry-scroll 140s linear infinite;
+}
+
+.hero__telemetry-track span {
+  padding-right: 5rem;
+}
+
+.hero__telemetry--paused .hero__telemetry-track {
+  animation-play-state: paused;
+}
+
+@keyframes telemetry-scroll {
+  from { transform: translate3d(0, 0, 0); }
+  to { transform: translate3d(-50%, 0, 0); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hero__scene { transform: none; opacity: 1; }
+  .hero__telemetry-track { animation: none; }
+  .hero__poster { transition: none; }
+}
+
+/* ---------------------------------------------------------------------------
+ * Glossary terms
+ *
+ * A dotted underline is the convention readers already know for "there is a
+ * definition here". Solid would read as a link and promise navigation.
+ * ------------------------------------------------------------------------- */
+
+.term {
+  position: relative;
+  display: inline;
+}
+
+.term__trigger {
+  font: inherit;
+  /* Buttons do not inherit these from their container by default, so a term
+     inside an uppercase stat label rendered in mixed case beside siblings
+     that were all capitals. */
+  text-transform: inherit;
+  letter-spacing: inherit;
+  color: inherit;
+  background: none;
+  border: 0;
+  padding: 0;
+  cursor: help;
+  text-decoration: underline dotted;
+  text-decoration-color: color-mix(in srgb, var(--accent) 70%, transparent);
+  text-underline-offset: 0.2em;
+  text-decoration-thickness: 1.5px;
+  transition: text-decoration-color var(--dur-swap) var(--ease-out);
+}
+
+.term__trigger:hover,
+.term__trigger:focus-visible {
+  text-decoration-color: var(--accent);
+}
+
+.term__tip {
+  position: absolute;
+  z-index: 40;
+  left: 50%;
+  bottom: calc(100% + 10px);
+  width: max-content;
+  max-width: min(320px, 82vw);
+  padding: 0.75rem 0.9rem;
+  display: grid;
+  gap: 0.3rem;
+  text-align: left;
+  font-size: 0.84rem;
+  font-weight: 400;
+  line-height: 1.5;
+  color: var(--text-dim);
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow);
+  /* Reset what the trigger's container may impose. A term inside a stat label
+     inherited that label's uppercase and letter-spacing, which turned a
+     two-sentence definition into an unreadable block of capitals. */
+  text-transform: none;
+  letter-spacing: normal;
+  opacity: 0;
+  visibility: hidden;
+  transform: translate(-50%, 4px);
+  transition:
+    opacity var(--dur-swap) var(--ease-out),
+    transform var(--dur-swap) var(--ease-out),
+    visibility 0s linear var(--dur-swap);
+  pointer-events: none;
+}
+
+.term__tip--below {
+  bottom: auto;
+  top: calc(100% + 10px);
+  transform: translate(-50%, -4px);
+}
+
+.term__tip--open {
+  opacity: 1;
+  visibility: visible;
+  transform: translate(-50%, 0);
+  transition-delay: 0s;
+}
+
+.term__name {
+  color: var(--text);
+  font-weight: 650;
+}
+
+.term__why {
+  color: var(--text-faint);
+}
+
+/* ---------------------------------------------------------------------------
+ * Payload inspector
+ * ------------------------------------------------------------------------- */
+
+.payload {
+  margin-top: 2rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-raised);
+  overflow: hidden;
+}
+
+.payload__summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: flex-start;
+  gap: 0.4rem 1rem;
+  padding: 0.9rem 1.1rem;
+  cursor: pointer;
+  list-style: none;
+  color: var(--text);
+  font-weight: 550;
+  transition: background var(--dur-swap) var(--ease-out);
+}
+
+.payload__summary::-webkit-details-marker {
+  display: none;
+}
+
+/* A chevron that turns with the panel, drawn in CSS so it inherits the ink. */
+.payload__summary::before {
+  content: "";
+  flex: none;
+  width: 0.5em;
+  height: 0.5em;
+  margin-right: 0.2rem;
+  border-right: 2px solid currentColor;
+  border-bottom: 2px solid currentColor;
+  transform: rotate(-45deg);
+  transition: transform var(--dur-swap) var(--ease-out);
+}
+
+.payload[open] .payload__summary::before {
+  transform: rotate(45deg);
+}
+
+.payload__summary:hover {
+  background: var(--bg-inset);
+}
+
+.payload__meta {
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-size: 0.74rem;
+  font-weight: 400;
+  color: var(--text-faint);
+}
+
+.payload__body {
+  border-top: 1px solid var(--border);
+  animation: result-in var(--dur-enter) var(--ease-out);
+}
+
+.payload__tabs {
+  display: flex;
+  gap: 0.25rem;
+  padding: 0.55rem 0.7rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.payload__tab,
+.payload__copy {
+  font: inherit;
+  font-size: 0.82rem;
+  padding: 0.3rem 0.7rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid transparent;
+  background: none;
+  color: var(--text-dim);
+  cursor: pointer;
+  transition:
+    color var(--dur-swap) var(--ease-out),
+    background var(--dur-swap) var(--ease-out);
+}
+
+.payload__tab:hover {
+  color: var(--text);
+}
+
+.payload__tab--active {
+  color: var(--text);
+  background: var(--bg-inset);
+  border-color: var(--border);
+}
+
+.payload__copy {
+  margin-left: auto;
+  border-color: var(--border);
+}
+
+.payload__copy:hover {
+  color: var(--accent);
+}
+
+.payload__code {
+  margin: 0;
+  max-height: 420px;
+  overflow: auto;
+  padding: 1rem 1.1rem;
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  line-height: 1.6;
+  color: var(--text-dim);
+  background: var(--bg);
+}
+
+.json-key { color: var(--sky-400); }
+.json-string { color: #9fd8a8; }
+.json-number { color: var(--sun-300); }
+.json-bool,
+.json-null { color: #d9a3f5; }
+
+/* ---------------------------------------------------------------------------
+ * Micro-interactions
+ *
+ * Each one answers an action. Nothing here animates on its own.
+ * ------------------------------------------------------------------------- */
+
+/* A focus ring that is always visible when it matters, and never on click. */
+:where(a, button, input, select, textarea, summary, [tabindex]):focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
+}
+
+/* Buttons acknowledge the press, so a click reads as registered before any
+   network response arrives. */
+.btn {
+  transition:
+    transform 120ms var(--ease-out),
+    background var(--dur-swap) var(--ease-out),
+    border-color var(--dur-swap) var(--ease-out),
+    box-shadow var(--dur-swap) var(--ease-out);
+}
+
+.btn:active {
+  transform: translateY(1px) scale(0.985);
+}
+
+.btn--primary:hover {
+  box-shadow: 0 6px 22px -8px color-mix(in srgb, var(--accent) 70%, transparent);
+}
+
+/* Only cards that are links lift: the lift says "this goes somewhere". A card
+   that is not clickable must not pretend to be. */
+a.card {
+  transition:
+    transform var(--dur-swap) var(--ease-out),
+    border-color var(--dur-swap) var(--ease-out),
+    box-shadow var(--dur-swap) var(--ease-out);
+}
+
+a.card:hover {
+  transform: translateY(-2px);
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
+  box-shadow: 0 12px 30px -16px rgb(0 0 0 / 0.6);
+}
+
+/* A focused chart canvas shows it is scrubbable. */
+.figure__canvas canvas:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 4px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .term__tip,
+  .btn,
+  a.card,
+  .payload__summary::before {
+    transition: none;
+  }
+  .btn:active,
+  a.card:hover {
+    transform: none;
+  }
+  .payload__body {
+    animation: none;
+  }
+}

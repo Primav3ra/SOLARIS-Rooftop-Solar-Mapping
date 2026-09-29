@@ -493,6 +493,7 @@ obligation rather than a courtesy. The site's About page carries the same list.
 | SRTM GL1 | USGS public domain | no |
 | NASA POWER (reference data) | NASA open data | no |
 | Global Solar Atlas (reference data) | CC BY 4.0, © Solargis | yes |
+| NASA Blue Marble and Black Marble (landing-page globe) | US Government work, public domain | no |
 
 The project's own code is MIT.
 
@@ -754,21 +755,41 @@ the fallback case it exists to serve.
 
 | Rung | Test RMSE | MBE | Skill vs Erbs |
 |---|---:|---:|---:|
-| `constant` (the 0.60 in production) | 0.2540 | −0.139 | −0.78 |
-| `climatology` (36 parameters, no ML) | 0.1958 | +0.015 | −0.37 |
-| **`erbs`** (published, 1982) | 0.1426 | +0.077 | 0.00 |
-| `ridge` | 0.1097 | +0.014 | +0.23 |
-| **`gradient_boosting`** | **0.0893** | +0.015 | **+0.37** |
+| `constant` (the 0.60 that was in production) | 0.2678 | −0.167 | −0.94 |
+| `climatology` (36 parameters, no ML) | 0.1983 | −0.022 | −0.43 |
+| **`erbs`** (published, 1982) | 0.1383 | +0.070 | 0.00 |
+| `ridge` | 0.0974 | −0.000 | +0.30 |
+| **`gradient_boosting`** | **0.0790** | **+0.0001** | **+0.43** |
 
 Five rungs, all reported, **simplest winner ships**. The gate —
 `MIN_SKILL_OVER_ERBS = 0.10` — was declared before training. The
-gradient-boosted model clears it at +0.37.
+gradient-boosted model clears it at +0.43, and its bias is essentially zero.
+
+18,624 training rows against 4,022 test rows, from 40,004 daytime hours.
 
 Why gradient boosting and not a neural network: a few thousand tabular rows with
 heterogeneous feature scales and a likely non-linear interaction between
 clearness and air mass is what trees handle well, and a net on this much data
 would be indefensible. Modest depth (4) and a leaf floor (40), because with ten
 sites a deeper model memorises sites rather than learning physics.
+
+#### The training set
+
+Every third day of the year, hourly, daylight hours only: 122 days per
+city-year, about 1,500 usable rows each, 40,004 in total.
+
+It was originally the 288-step monthly-diurnal climatology — the same twelve
+mid-month days the pvlib discretisation check uses. That is the right sampling
+for checking a discretisation error and the wrong one for fitting this model.
+The primary predictor is the clearness index, and twelve days a year carry
+almost no weather: the fitted kt distribution was not the one the model would
+meet in service. Widening it multiplied the sample by eighteen, moved skill
+from +0.37 to +0.43, and took the bias from +0.015 to +0.0001.
+
+The dense cache lives beside the climatology rather than replacing it
+(`evals/references/nasa_power_train/`, 1.8 MB), because the two answer
+different questions. Refresh with
+`python -m solaris.evals.fetch --train --years 2020 2021 2022`.
 
 #### The holdout
 
@@ -795,28 +816,77 @@ last resort rather than the first fallback it used to be.
 **A domain check guards the learned rung.** A gradient-boosted tree does not
 extrapolate; it returns the nearest leaf, confidently and with no basis. A
 per-feature range check against the training envelope recorded at fit time sends
-out-of-domain inputs to Erbs instead. Verified: latitude 75°N falls back
-correctly.
+out-of-domain inputs to Erbs instead.
+
+Two defects in that guard had to be fixed before the model could serve anything,
+and both passed every offline test while making the model useless in production:
+
+**The gate excluded Bengaluru.** The envelope is fitted on the training split,
+and the holdout is *spatial by design*, so its latitude range can never cover
+the cities the model exists to generalise to. The fitted floor was 13.0827°N —
+exactly Chennai's latitude — so Bengaluru at 12.9716°N fell outside it, and so
+did Coimbatore, Kochi, Madurai and Thiruvananthapuram. A model that refuses
+peninsular India is not falling back safely, it is absent. `abs_latitude` is now
+excluded from the gate by name; the physical predictors stay gated, because
+that is where an out-of-range value means a genuinely unfamiliar atmosphere.
+
+**The check was `all()` over the batch.** A request evaluates every sun position
+for a window at once, and the lowest sits at the 2° altitude floor —
+`sin_elevation` about 0.035 against a training floor of 0.122. One such position
+sent all thirty-one to Erbs, so the model would never have run. Routing is now
+per sample: the model where it is competent, Erbs where it is not, with the
+fallback share reported in the detail string.
 
 Artifacts are committed under `ml/artifacts/` with a manifest recording what
 shipped and on what evidence, so "which model is live, and how good was it?" is
 answerable from the repository without loading a pickle.
 
-#### Serving status — open item
+#### Serving: applying an hourly model to a window
 
-**The model is trained, committed, gated and reported, but not wired into the
-request path.** `/api/yield` and `/api/series` still call
-`sample_era5_beam_fraction_at_point()` and use the ERA5-derived figure directly;
-nothing imports `solaris.ml`, so `registry.predict_diffuse_fraction()` — the
-fallback chain described above — is never called.
+The model is fitted per hour. The API serves windows — a month, a quarter, a
+year, summed to one GHI total — so there is no hour to hand it. Two obvious
+bridges are both wrong:
 
-The consequence is bounded and specific: the ML page's numbers are true
-statements about the model, and the fallback chain is implemented and tested, but
-no served result is currently produced by it. Wiring it is a physics change, not
-a cleanup: it moves every beam fraction, invalidates the golden responses and the
-eval baseline, and makes `scikit-learn`/`joblib` load-bearing at runtime where
-they are currently optional. It is therefore recorded here rather than done
-silently. See §14.
+*Feed it the period aggregate as though it were an hour.* Diffuse fraction is
+strongly non-linear in the clearness index, so evaluating once at the mean is
+not the mean of evaluating — the same convexity trap the soiling model
+documents.
+
+*Fetch hourly ERA5 for the window and run the model per hour.* Correct, and
+unaffordable against a quota where one development day consumed 91% of a month.
+
+`solaris/ml/serving.py` does neither. It evaluates the model at **the sun
+positions the request has already computed** — 13 for a day, 39 for a month, 31
+for a year — and weights the results by the same insolation weights the shadow
+trace uses. One consistent sampling of the window drives both the beam fraction
+and the shadow penalty, rather than two that disagree. The clearness index is
+the one quantity geometry cannot supply, so it is derived once for the whole
+window: measured GHI over extraterrestrial horizontal insolation, the latter
+computed analytically per day and summed.
+
+**What the approximation costs.** Sub-daily variation in clearness is lost:
+every position in a window shares one kt, so a window of clear mornings and
+cloudy afternoons is modelled as uniformly average. Curvature over the
+*geometry* axis survives, because each position carries its own elevation and
+air mass. The served provenance reads `model:...:period`, not `model`, for
+exactly this reason.
+
+**What wiring it changed.** The correction redistributes loss between the two
+geometry terms and barely moves the total, which is what re-splitting
+beam/diffuse should do:
+
+| | before | after |
+|---|---:|---:|
+| beam fraction | 0.6200 | 0.5188 |
+| diffuse fraction | 0.3800 | 0.4812 |
+| shadow penalty | 3.65% | 3.05% |
+| sky-view penalty | 1.66% | 2.10% |
+| net yield | — | +0.2% |
+
+Had the headline energy moved much, the wiring would be wrong.
+
+The response reports both figures — `beam_fraction` and `era5_beam_fraction` —
+so a corrected number is never indistinguishable from a measured one.
 
 ### 5.3 Track C — soiling, reframed from ML to parametric
 
@@ -1805,14 +1875,82 @@ layers must be stretched over the range roofs actually occupy (`SHADOW_VIS_MAX =
 and a 0–1 stretch renders every real value as a uniform dark wash
 indistinguishable from "no data".
 
-### 10.7 Chart conventions
+### 10.7 Motion, glossary and inspection
+
+**The landing globe** (`src/intro/EarthScene.jsx`) renders NASA Blue Marble by
+day and Black Marble city lights by night, with the terminator fixed to the sun
+so the planet turns through it. The ten amber markers are the evaluation
+cities at their true coordinates, read from `data/cities.js`; the orbit is a
+sun-synchronous polar track of the kind MODIS flies. One orchestrated moment —
+India swings into view on load — then a slow spin and a lean toward the
+pointer. Reduced motion renders it static, India facing.
+
+Two defects in it are worth knowing because both passed review:
+
+- **react-three-fiber copies `uniforms` into the material at construction.**
+  Mutating the memoised uniforms object changed nothing on the GPU, so the
+  planet stayed at fade 0 and drew as a black disc. Measured in the browser —
+  the material's uniforms were a different object and its `uFade` never left
+  zero. Uniforms are now written through the live material
+  (`setUniform(meshRef.current, …)`). The original scene updated `uTime` the
+  same broken way; it went unnoticed only because nothing read `uTime`.
+- **The atmosphere shell is drawn on back faces**, where the outward normal
+  points away from the camera. `max(dot(n, v), 0)` was therefore zero
+  everywhere, the Fresnel term saturated, and the glow drew as a hard blue
+  ring. It now uses `-dot(n, v)`, which fades to nothing at the outer rim.
+
+**Chart entrances** come from a global Chart.js plugin (`entrance`, in
+`charts.js`), so every chart on every page gets them. Charts built inside the
+result panel reached final geometry on their first frame and never animated —
+sampled every 45 ms a bar sat at its full height from the start — while the
+same configuration built in isolation animated normally, and the in-page chart
+animated the moment it was reset after layout. The plugin therefore hides each
+chart at init and replays its entrance two frames later. The hide must suspend
+the canvas's opacity transition first: React paints the canvas at full opacity
+before the chart is built, so an ordinary `opacity: 0` *animated* down from 1
+and the replay restored it before it got there. Verified frame by frame; with
+reduced motion requested, charts render static.
+
+**The glossary** (`data/glossary.js`, `components/Term.jsx`) defines every
+technical term in two sentences — what it is, and why it matters here. `Term`
+is a real button, so it opens on hover, keyboard focus and tap, closes on
+Escape, and is linked by `aria-describedby`. Never nest one inside a link:
+a button inside an `<a>` is invalid and fires both. On the linked landing
+cards the stat note carries the meaning in words instead.
+
+**The payload inspector** (`components/PayloadInspector.jsx`) shows the exact
+request and response behind the result on screen, plus an equivalent `curl`
+command, so any figure can be reproduced outside the browser.
+
+**Scrubbing.** Line charts carry a crosshair and can be stepped with the arrow
+keys once focused; Home and End jump to the ends.
+
+**The sandbox sliders** on the Method page each have an accessible name and an
+`aria-valuetext` with units. They had neither, so a screen reader announced all
+eight as "slider".
+
+**The telemetry line** under the hero is real: each record is a city-year from
+`evals/reports/latest.json` — coordinates, reference irradiance, modelled
+specific yield. Invented telemetry would have been decoration on a project
+whose argument is that it does not overclaim.
+
+### 10.8 Chart conventions
 
 Form chosen before colour:
 
 - **No dual axes, ever.** Value and error never share a chart; error goes in its
   own panel below, sharing the x-axis.
-- **Colour follows the entity, not its rank.** Every dataset names its palette
-  entry, so re-sorting reorders bars without recolouring them.
+- **Colour follows the entity, not its rank — and not the page.** Every loss
+  term takes its colour from `lossColour()` in `charts.js`. The Method page's
+  charts once carried their own palette, with heat island in a hand-picked
+  purple and shadow and sky view *inverted* relative to Explore, so a reader
+  who learned the key on one page misread the other.
+- **Context is neutral.** Where one series is context rather than the subject —
+  the delivered share, the total — it is slate, so the colour goes to the
+  losses.
+- **Label ink follows the fill.** A value drawn inside a mark picks light or
+  dark ink by the fill's WCAG luminance; dark ink on the slate delivered
+  segment was unreadable.
 - **A legend whenever there are two or more series.** One series gets none.
 - **Categorical palettes stop at four.** Past roughly seven the eye cannot hold
   the legend; the honest answer is small multiples. Twelve cities means small
@@ -1824,7 +1962,7 @@ Form chosen before colour:
 - **More than ~7 meaningful rows is a table, not a chart.**
 - Every chart has a reachable table view.
 
-### 10.8 Commits
+### 10.9 Commits
 
 Conventional-ish prefixes: `[feat]`, `[fix]`, `[refactor]`, `[test]`, `[docs]`.
 
@@ -1850,7 +1988,7 @@ saying "fixed shadow model" throws that away.
 | — | **The soiling calibration rests on one assumed AOD value.** | The rate is measured; the AOD it is anchored on is a literature figure. Per-city soiling *ranking* inherits that uncertainty; the rainfall-driven results do not. |
 | — | **Building confidence is not a probability.** The Open Buildings presence threshold of 0.5 is a prior, not a calibrated likelihood. | Roof area carries an unquantified inclusion error. |
 | — | **Coordinate quantisation to ~11 m.** | Two clicks 10 m apart return the identical result. A deliberate trade: without it the cache hit rate would be near zero. |
-| — | **The trained decomposition model is not in the serving path.** | Beam fraction still comes straight from ERA5. See §5.2. |
+| — | **The decomposition correction shares one clearness index across a window.** | Sub-daily variation in sky state is not represented; a window of clear mornings and cloudy afternoons is modelled as uniformly average. See §5.2. |
 
 ### 11.2 Not built, and why
 
@@ -1907,6 +2045,17 @@ which is the harder kind to catch.
   the server initialised.
 - An **unlocked module global** in `_ensure_ee` that two concurrent cold requests
   could both initialise through.
+- **The rate limiter refused the site's own JavaScript.** It applied to every
+  path except five meta endpoints — including `/`, every `/assets/*.js` chunk,
+  the stylesheet and the Earth textures — at 30 per minute and 300 per day. One
+  landing-page load is a dozen or more files, so a few navigations answered 429
+  for the page's own code and it failed with "Failed to fetch dynamically
+  imported module". Worse for this audience: static files carry no session
+  token, so they were keyed by IP, and carrier-grade NAT puts thousands of
+  Indian mobile subscribers behind one address — they shared 300 requests a day
+  for *loading the site*. Only `/api/` is limited now; static files cost nothing
+  and touch no quota. Found by exhausting the limiter during testing, not by
+  review.
 - **`ee_calls` was always logged as `0`.** The counter was a contextvar written
   by the request handler and read by the middleware, but Starlette's
   `BaseHTTPMiddleware` runs the downstream app in a separate task, so the
@@ -1981,18 +2130,12 @@ mechanism. "This is a weakness we are honest about" is not.
 
 Carried forward deliberately, rather than left to be rediscovered.
 
-1. **Wire the decomposition model into the serving path.** Trained, gated,
-   committed and reported, but `/api/yield` and `/api/series` still take beam
-   fraction straight from ERA5 and nothing imports `solaris.ml`. Doing it moves
-   every result, so it needs a golden-file regeneration, an eval re-run, and a
-   decision about making `scikit-learn`/`joblib` runtime rather than optional
-   dependencies. See §5.2.
-2. **`SoilingPenalty.stats()` is documented as superseded but is still the live
+1. **`SoilingPenalty.stats()` is documented as superseded but is still the live
    path** for `/api/baseline` and `/api/series`; only `/api/yield` uses
    `stats_windowed()`. Either migrate those two endpoints or stop calling the
    method superseded — as it stands the window-independent soiling figure is what
    those endpoints report.
-3. **Re-run the live round-trip profile.** The committed
+2. **Re-run the live round-trip profile.** The committed
    `evals/reports/track_b_profile.json` records
    `shadow_frequency_reduce: -1.0` with `User memory limit exceeded` — a failure
    that the energy-stack reduction and `tileScale=4` have since fixed. The
@@ -2000,11 +2143,16 @@ Carried forward deliberately, rather than left to be rediscovered.
    count, which is unaffected), but the published stage timings are incomplete
    until `python -m solaris.evals.profile_yield --live` is run again with
    credentials.
-4. **Per-endpoint cost multipliers are reasoned, not measured.** §8.2's
+3. **Per-endpoint cost multipliers are reasoned, not measured.** §8.2's
    multipliers come from counting reductions, not from EECU-second telemetry.
    Once the console meter has a few weeks of data against the `ee_cost` log
    field, calibrate them.
-5. **P1 (flat-roof assumption) is the largest remaining physics gap**, worth a
+4. **P1 (flat-roof assumption) is the largest remaining physics gap**, worth a
    measured mean of 7.1% of specific yield and up to 14.1% at high latitude. The
    pvlib layer already computes the tilted case; the serving path does not use
    it.
+5. **The heat-island overlay uses a rainbow-like ramp on a diverging
+   quantity.** ΔT runs negative to positive, and blue → green → purple → red
+   has no neutral midpoint. A proper diverging ramp would read correctly, but
+   the change has to be made in the server's tile palette and the legend
+   together, so it was left rather than done half.

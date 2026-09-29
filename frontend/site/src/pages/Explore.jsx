@@ -1,21 +1,21 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useSearchParams } from 'react-router-dom';
-import { api, ApiError, encodeQuery, decodeQuery } from '../data/api.js';
-import { exploreStore } from '../data/exploreStore.js';
-import MapPanel from '../components/MapPanel.jsx';
-import ResultPanel from '../components/ResultPanel.jsx';
-import SiteHistory from '../components/SiteHistory.jsx';
-import { CITIES } from '../data/cities.js';
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useSearchParams } from "react-router-dom";
+import { api, ApiError, encodeQuery, decodeQuery } from "../data/api.js";
+import { exploreStore } from "../data/exploreStore.js";
+import MapPanel from "../components/MapPanel.jsx";
+import ResultPanel from "../components/ResultPanel.jsx";
+import SiteHistory from "../components/SiteHistory.jsx";
+import { CITIES } from "../data/cities.js";
 
 const DEFAULTS = {
   lat: 28.6139,
   lon: 77.209,
   half: 0.01,
-  mode: 'yearly',
+  mode: "yearly",
   year: 2023,
   quarter: 1,
   month: 1,
-  clean: '',
+  clean: "",
 };
 
 /** The request body, built from UI state. Kept pure so it is easy to reason about. */
@@ -26,21 +26,23 @@ function buildRequest(state) {
     half_size_deg: Number(state.half),
     baseline_mode: state.mode,
   };
-  if (state.mode !== 'daily') body.year = Number(state.year);
-  if (state.mode === 'quarterly') body.quarter = Number(state.quarter);
-  if (state.mode === 'monthly') body.month = Number(state.month);
-  if (state.mode === 'daily') {
+  if (state.mode !== "daily") body.year = Number(state.year);
+  if (state.mode === "quarterly") body.quarter = Number(state.quarter);
+  if (state.mode === "monthly") body.month = Number(state.month);
+  if (state.mode === "daily") {
     // Both dates, and end must be start + 1 day exclusive. Sending only
     // start_date returns a 400: the server will not guess the span for you,
     // which is right -- an implied end date is how a one-day query silently
     // becomes a one-year one.
-    const month = String(state.month).padStart(2, '0');
-    const start = new Date(Date.UTC(Number(state.year), Number(state.month) - 1, 15));
+    const month = String(state.month).padStart(2, "0");
+    const start = new Date(
+      Date.UTC(Number(state.year), Number(state.month) - 1, 15),
+    );
     const end = new Date(start.getTime() + 86400000);
     body.start_date = `${state.year}-${month}-15`;
     body.end_date_exclusive = end.toISOString().slice(0, 10);
   }
-  if (state.clean !== '' && state.clean != null) {
+  if (state.clean !== "" && state.clean != null) {
     body.cleaning_interval_days = Number(state.clean);
   }
   return body;
@@ -54,15 +56,15 @@ function buildRequest(state) {
  */
 function useTheme() {
   const [theme, setTheme] = useState(
-    () => document.documentElement.dataset.theme ?? 'dark',
+    () => document.documentElement.dataset.theme ?? "dark",
   );
   useEffect(() => {
     const observer = new MutationObserver(() =>
-      setTheme(document.documentElement.dataset.theme ?? 'dark'),
+      setTheme(document.documentElement.dataset.theme ?? "dark"),
     );
     observer.observe(document.documentElement, {
       attributes: true,
-      attributeFilter: ['data-theme'],
+      attributeFilter: ["data-theme"],
     });
     return () => observer.disconnect();
   }, []);
@@ -76,7 +78,8 @@ export default function Explore() {
   // Order matters: an explicit URL wins (a shared permalink must reproduce its
   // query), then the session store, then defaults.
   const [state, setState] = useState(() => {
-    if (searchParams.toString()) return decodeQuery(searchParams.toString(), DEFAULTS);
+    if (searchParams.toString())
+      return decodeQuery(searchParams.toString(), DEFAULTS);
     return exploreStore.getQuery() ?? DEFAULTS;
   });
 
@@ -131,7 +134,11 @@ export default function Explore() {
       try {
         const seriesResponse = await api.series(body, controller.signal);
         setSeries(seriesResponse.data);
-        exploreStore.setResult(yieldResponse.data, seriesResponse.data, yieldResponse.meta);
+        exploreStore.setResult(
+          yieldResponse.data,
+          seriesResponse.data,
+          yieldResponse.meta,
+        );
         const entry = exploreStore.remember(
           state,
           yieldResponse.data,
@@ -155,8 +162,10 @@ export default function Explore() {
         setActiveId(entry.id);
       }
     } catch (err) {
-      if (err.name === 'AbortError') return;
-      setError(err instanceof ApiError ? err : new ApiError({ message: String(err) }));
+      if (err.name === "AbortError") return;
+      setError(
+        err instanceof ApiError ? err : new ApiError({ message: String(err) }),
+      );
       setResult(null);
       setSeries(null);
       exploreStore.clearResult();
@@ -166,18 +175,21 @@ export default function Explore() {
   }, [state, setSearchParams]);
 
   /** Restore a stored site. Reads from memory: no Earth Engine calls. */
-  const restore = useCallback((id) => {
-    const restoredState = exploreStore.restore(id);
-    if (!restoredState) return;
-    const stored = exploreStore.getResult();
-    setState(restoredState);
-    setResult(stored.result);
-    setSeries(stored.series);
-    setMeta(stored.meta);
-    setError(null);
-    setActiveId(id);
-    setSearchParams(encodeQuery(restoredState), { replace: true });
-  }, [setSearchParams]);
+  const restore = useCallback(
+    (id) => {
+      const restoredState = exploreStore.restore(id);
+      if (!restoredState) return;
+      const stored = exploreStore.getResult();
+      setState(restoredState);
+      setResult(stored.result);
+      setSeries(stored.series);
+      setMeta(stored.meta);
+      setError(null);
+      setActiveId(id);
+      setSearchParams(encodeQuery(restoredState), { replace: true });
+    },
+    [setSearchParams],
+  );
 
   const forget = useCallback((id) => {
     exploreStore.forget(id);
@@ -211,20 +223,20 @@ export default function Explore() {
     <div className="page page--wide">
       <div
         style={{
-          display: 'grid',
-          gridTemplateColumns: 'minmax(300px, 380px) 1fr',
-          minHeight: 'calc(100vh - var(--nav-height))',
+          display: "grid",
+          gridTemplateColumns: "minmax(300px, 380px) 1fr",
+          minHeight: "calc(100vh - var(--nav-height))",
         }}
       >
         <aside
           style={{
-            borderRight: '1px solid var(--border)',
-            padding: '1.5rem',
-            overflowY: 'auto',
-            maxHeight: 'calc(100vh - var(--nav-height))',
+            borderRight: "1px solid var(--border)",
+            padding: "1.5rem",
+            overflowY: "auto",
+            maxHeight: "calc(100vh - var(--nav-height))",
           }}
         >
-          <h2 style={{ marginTop: 0, fontSize: '1.2rem' }}>Query</h2>
+          <h2 style={{ marginTop: 0, fontSize: "1.2rem" }}>Query</h2>
 
           <div className="field">
             <div className="field__label">
@@ -237,8 +249,8 @@ export default function Explore() {
                   className={`chip${
                     Math.abs(city.lat - state.lat) < 0.02 &&
                     Math.abs(city.lon - state.lon) < 0.02
-                      ? ' is-active'
-                      : ''
+                      ? " is-active"
+                      : ""
                   }`}
                   onClick={() => set({ lat: city.lat, lon: city.lon })}
                 >
@@ -249,7 +261,7 @@ export default function Explore() {
             <p className="field__hint">Or click anywhere on the map.</p>
           </div>
 
-          <div className="grid grid--2" style={{ gap: '0.6rem' }}>
+          <div className="grid grid--2" style={{ gap: "0.6rem" }}>
             <div className="field">
               <div className="field__label">
                 <span>Latitude</span>
@@ -300,10 +312,10 @@ export default function Explore() {
               <span>Window</span>
             </div>
             <div className="chip-row">
-              {['yearly', 'quarterly', 'monthly', 'daily'].map((mode) => (
+              {["yearly", "quarterly", "monthly", "daily"].map((mode) => (
                 <button
                   key={mode}
-                  className={`chip${state.mode === mode ? ' is-active' : ''}`}
+                  className={`chip${state.mode === mode ? " is-active" : ""}`}
                   onClick={() => set({ mode })}
                 >
                   {mode}
@@ -312,12 +324,15 @@ export default function Explore() {
             </div>
           </div>
 
-          <div className="grid grid--2" style={{ gap: '0.6rem' }}>
+          <div className="grid grid--2" style={{ gap: "0.6rem" }}>
             <div className="field">
               <div className="field__label">
                 <span>Year</span>
               </div>
-              <select value={state.year} onChange={(e) => set({ year: e.target.value })}>
+              <select
+                value={state.year}
+                onChange={(e) => set({ year: e.target.value })}
+              >
                 {years.map((year) => (
                   <option key={year} value={year}>
                     {year}
@@ -326,7 +341,7 @@ export default function Explore() {
               </select>
             </div>
 
-            {state.mode === 'quarterly' && (
+            {state.mode === "quarterly" && (
               <div className="field">
                 <div className="field__label">
                   <span>Quarter</span>
@@ -344,15 +359,20 @@ export default function Explore() {
               </div>
             )}
 
-            {(state.mode === 'monthly' || state.mode === 'daily') && (
+            {(state.mode === "monthly" || state.mode === "daily") && (
               <div className="field">
                 <div className="field__label">
                   <span>Month</span>
                 </div>
-                <select value={state.month} onChange={(e) => set({ month: e.target.value })}>
+                <select
+                  value={state.month}
+                  onChange={(e) => set({ month: e.target.value })}
+                >
                   {Array.from({ length: 12 }, (_, i) => i + 1).map((m) => (
                     <option key={m} value={m}>
-                      {new Date(2000, m - 1, 1).toLocaleString('en', { month: 'long' })}
+                      {new Date(2000, m - 1, 1).toLocaleString("en", {
+                        month: "long",
+                      })}
                     </option>
                   ))}
                 </select>
@@ -364,10 +384,13 @@ export default function Explore() {
             <div className="field__label">
               <span>Panel cleaning</span>
               <span className="field__value">
-                {state.clean === '' ? 'rain only' : `every ${state.clean}d`}
+                {state.clean === "" ? "rain only" : `every ${state.clean}d`}
               </span>
             </div>
-            <select value={state.clean} onChange={(e) => set({ clean: e.target.value })}>
+            <select
+              value={state.clean}
+              onChange={(e) => set({ clean: e.target.value })}
+            >
               <option value="">Rain only (never manually cleaned)</option>
               <option value="7">Weekly</option>
               <option value="14">Fortnightly</option>
@@ -375,9 +398,9 @@ export default function Explore() {
               <option value="90">Quarterly</option>
             </select>
             <p className="field__hint">
-              Rain-only is the honest default for an unmaintained roof. In an arid city
-              this choice moves the answer by several per cent; in Mumbai it barely
-              registers, because the monsoon already cleans.
+              Rain-only is the honest default for an unmaintained roof. In an
+              arid city this choice moves the answer by several per cent; in
+              Mumbai it barely registers, because the monsoon already cleans.
             </p>
           </div>
 
@@ -391,7 +414,7 @@ export default function Explore() {
 
           <button
             className="btn btn--primary btn--lg"
-            style={{ width: '100%', marginTop: '0.5rem' }}
+            style={{ width: "100%", marginTop: "0.5rem" }}
             onClick={run}
             disabled={busy}
           >
@@ -400,39 +423,44 @@ export default function Explore() {
                 <span className="spinner" /> Computing…
               </>
             ) : (
-              'Compute potential'
+              "Compute potential"
             )}
           </button>
 
           {meta.guestRemaining != null && (
-            <p className="field__hint" style={{ marginTop: '0.7rem' }}>
-              {meta.guestRemaining} of {meta.guestAllowance} computations left this session.{' '}
-              {meta.cache === 'HIT' && (
+            <p className="field__hint" style={{ marginTop: "0.7rem" }}>
+              {meta.guestRemaining} of {meta.guestAllowance} computations left
+              this session.{" "}
+              {meta.cache === "HIT" && (
                 <strong>That one was cached, so it cost you nothing.</strong>
               )}
             </p>
           )}
 
           {availability?.latest_available_date && (
-            <p className="field__hint" style={{ marginTop: '0.8rem' }}>
-              Irradiance data runs to <strong>{availability.latest_available_date}</strong>{' '}
-              ({availability.source}). A window reaching past it returns a visibly partial
-              result rather than a quietly smaller number.
+            <p className="field__hint" style={{ marginTop: "0.8rem" }}>
+              Irradiance data runs to{" "}
+              <strong>{availability.latest_available_date}</strong> (
+              {availability.source}). A window reaching past it returns a
+              visibly partial result rather than a quietly smaller number.
             </p>
           )}
 
           <p className="source-note">
-            Every computation reports which of its inputs came from a fallback rather than
-            a measurement. Look for the data-quality badge on the result.
+            Every computation reports which of its inputs came from a fallback
+            rather than a measurement. Look for the data-quality badge on the
+            result.
           </p>
         </aside>
 
-        <div style={{ position: 'relative', minHeight: '480px' }}>
+        <div style={{ position: "relative", minHeight: "480px" }}>
           <MapPanel
             lat={Number(state.lat)}
             lon={Number(state.lon)}
             halfSize={Number(state.half)}
-            onPick={(lat, lon) => set({ lat: lat.toFixed(4), lon: lon.toFixed(4) })}
+            onPick={(lat, lon) =>
+              set({ lat: lat.toFixed(4), lon: lon.toFixed(4) })
+            }
             request={buildRequest(state)}
             theme={theme}
             building={result?.geojson ?? null}
@@ -446,6 +474,7 @@ export default function Explore() {
         error={error}
         busy={busy}
         meta={meta}
+        request={result ? buildRequest(state) : null}
         onRetry={run}
       />
     </div>

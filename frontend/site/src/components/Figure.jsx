@@ -1,7 +1,7 @@
 import { useId, useState } from 'react';
 
 /**
- * A chart with a reachable table view behind it.
+ * A chart with a reachable table view behind it, and a stated finding under both.
  *
  * The table is not a fallback, it is a peer. Two reasons, and the second is the
  * one that made it non-negotiable here:
@@ -17,6 +17,7 @@ import { useId, useState } from 'react';
  */
 export default function Figure({
   title,
+  finding,
   caption,
   children,
   columns,
@@ -81,6 +82,17 @@ export default function Figure({
         </div>
       )}
 
+      {/*
+        Two lines, doing two different jobs.
+
+        `finding` is computed from the result on screen and states what this
+        particular chart shows -- "soiling is 71% of loss here". `caption` is
+        the standing note about method and applies to every instance of the
+        figure. Collapsing them into one paragraph, which is what this
+        component used to do, meant every chart explained the chart type and
+        none of them reported the result.
+      */}
+      {finding && <p className="figure__finding">{finding}</p>}
       {caption && <p className="figure__caption">{caption}</p>}
       {source && <p className="source-note">Source: {source}</p>}
     </figure>

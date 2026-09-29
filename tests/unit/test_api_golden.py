@@ -153,14 +153,41 @@ class TestSyntheticWorldWiring:
             world.expected_annual_ghi_kwh_m2(), rel=1e-6
         )
 
-    def test_beam_fraction_comes_from_era5_hourly(self, client):
+    def test_the_raw_era5_beam_fraction_is_still_reported(self, client):
         """
-        Numerator and denominator both come from ERA5 HOURLY so the ratio is
-        internally consistent. The world sets it to exactly 0.62.
+        ERA5 HOURLY supplies numerator and denominator, so the raw ratio is
+        internally consistent; the world sets it to exactly 0.62.
+
+        The served figure is no longer that ratio -- the decomposition model
+        corrects it -- but the raw value has to stay in the response. Without
+        it a reader cannot tell a corrected number from a measured one, which
+        is the property the whole data_quality block exists to preserve.
         """
         body = client.post("/api/yield", json=_request()).json()
-        assert body["beam_fraction"] == pytest.approx(world.expected_beam_fraction(), rel=1e-6)
-        assert body["beam_fraction_source"] == "era5_hourly"
+        assert body["era5_beam_fraction"] == pytest.approx(world.expected_beam_fraction(), rel=1e-6)
+
+    def test_the_served_beam_fraction_is_model_corrected(self, client):
+        """
+        ERA5 is documented to overestimate the direct component, with the error
+        growing in aerosol load -- India's regime. The reference mean over the
+        evaluation set is 0.457 against a 0.60 fallback, so a correction that
+        did nothing would mean the model is not wired in.
+        """
+        body = client.post("/api/yield", json=_request()).json()
+        assert body["beam_fraction"] != pytest.approx(world.expected_beam_fraction(), rel=1e-6)
+        assert body["beam_fraction_source"].startswith(("model:", "erbs")), body[
+            "beam_fraction_source"
+        ]
+        assert 0.0 <= body["beam_fraction"] <= 1.0
+
+    def test_the_correction_moves_beam_fraction_down(self, client):
+        """
+        Direction, not magnitude. ERA5 reads high over India, so a correction
+        that raised the beam fraction would indicate the sign is wrong -- which
+        would silently over-apply the shadow penalty rather than fix it.
+        """
+        body = client.post("/api/yield", json=_request()).json()
+        assert body["beam_fraction"] < body["era5_beam_fraction"]
 
     def test_aod_and_soiling_come_from_the_registered_maiac_value(self, client):
         body = client.post("/api/yield", json=_request()).json()

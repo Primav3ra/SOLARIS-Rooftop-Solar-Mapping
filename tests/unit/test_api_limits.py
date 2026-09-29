@@ -608,3 +608,143 @@ class TestTileCostAndCaching:
             f"one city costs {session:g} units against a {budget:g}-unit day, so a "
             f"visitor cannot examine two sites. Overlay pricing is too high."
         )
+
+
+class TestTileLayersRender:
+    """
+    Every overlay must come back with a tile template, at every layer.
+
+    The heat-island layer silently returned nothing on the deployed site. Its
+    background window is denominated in metres, which fixes the window's size
+    but not its cost: Earth Engine converts metres to pixels using the
+    projection of the *request*, and a tile at street zoom is roughly
+    metre-scale, so a 30 km radius asked for a kernel about 30,000 pixels
+    across. The reduction path never hit this because reduceRegion pins
+    scale=1 km itself, so the number was right while the map was blank --
+    the same asymmetry as defect D9, surviving in the one place D9's fix had
+    not reached.
+    """
+
+    #: Every layer the schema accepts. Derived from the schema rather than
+    #: restated, so a new layer cannot be added without being covered here.
+    @staticmethod
+    def _layers():
+        import typing
+
+        from solaris.api.schemas import TilesRequest
+
+        annotation = TilesRequest.model_fields["layer"].annotation
+        return list(typing.get_args(annotation))
+
+    def test_every_declared_layer_returns_a_tile_template(self, monkeypatch):
+        monkeypatch.setenv("SOLARIS_DAILY_EE_COST_BUDGET", "1000")
+        get_settings.cache_clear()
+        limits_mod.reset_limits()
+        cache_mod.reset_cache()
+        install_fake_ee(monkeypatch)
+        world.register_world()
+        client = _client()
+
+        layers = self._layers()
+        assert layers, "no layers found on TilesRequest"
+
+        missing = []
+        for layer in layers:
+            response = client.post(
+                "/api/tiles",
+                json={**_request(baseline_mode="monthly", year=2023, month=5), "layer": layer},
+            )
+            if response.status_code != 200:
+                missing.append(f"{layer}: HTTP {response.status_code}")
+                continue
+            if not response.json().get("urlTemplate"):
+                missing.append(f"{layer}: no urlTemplate")
+
+        assert missing == [], f"layers that did not render: {missing}"
+
+    def test_the_heat_island_background_is_pinned_to_a_coarse_projection(self):
+        """
+        Structural, because the behavioural test above cannot see it: the fake
+        Earth Engine does not model the cost of an oversized kernel, so a
+        30,000-pixel focal window passes offline and fails in production.
+
+        What must hold is that the focal window is computed against a pinned
+        projection rather than the request's.
+        """
+        import pathlib as _pathlib
+
+        import solaris.api.app as app_mod
+
+        source = _pathlib.Path(app_mod.__file__).read_text(encoding="utf-8")
+        branch = source[source.index('elif req.layer == "temperature_delta"') :]
+        branch = branch[: branch.index("        else:")]
+
+        assert "reproject(" in branch, (
+            "the heat-island tile takes a 30 km focal mean; without pinning the "
+            "projection first, Earth Engine sizes that kernel against the tile "
+            "request and returns nothing at street zoom."
+        )
+        assert "focal_mean" in branch
+        assert branch.index("reproject(") < branch.index("focal_mean"), (
+            "reproject must come before focal_mean, or the kernel is still "
+            "sized against the request projection."
+        )
+
+
+class TestStaticFilesAreNeverRateLimited:
+    """
+    Observed locally: after enough navigation the server answered 429 for the
+    site's own JavaScript, and the page failed to load. The limiter applied to
+    every path, and a single landing-page load is a dozen or more static
+    files against an allowance of 30 per minute.
+
+    Behind carrier-grade NAT -- common on Indian mobile networks, and the
+    reason this module prefers a session token over the client address --
+    thousands of subscribers share one IP, so they shared that allowance for
+    loading the site, before anyone computed anything.
+    """
+
+    def _exhausted_client(self, monkeypatch):
+        monkeypatch.setenv("SOLARIS_RATE_LIMIT_PER_MINUTE", "2")
+        get_settings.cache_clear()
+        limits_mod.reset_limits()
+        cache_mod.reset_cache()
+        install_fake_ee(monkeypatch)
+        world.register_world()
+        client = _client()
+        # Spend the whole allowance on the API.
+        for _ in range(4):
+            client.post("/api/yield", json=_request())
+        return client
+
+    def test_the_api_is_still_limited(self, monkeypatch):
+        client = self._exhausted_client(monkeypatch)
+        assert client.post("/api/yield", json=_request()).status_code == 429
+
+    @pytest.mark.parametrize(
+        "path",
+        ["/", "/explore", "/validation", "/assets/index.js", "/textures/earth-day.jpg"],
+    )
+    def test_static_and_page_routes_are_never_429(self, monkeypatch, path):
+        """
+        Whatever the file resolves to -- 200, or 404 in a checkout with no
+        built frontend -- it must not be refused for rate. A 429 here is the
+        page failing to load its own code.
+        """
+        client = self._exhausted_client(monkeypatch)
+        for _ in range(10):
+            status = client.get(path).status_code
+            assert status != 429, f"{path} was rate limited"
+
+    def test_the_rule_is_the_api_prefix(self):
+        from solaris.api.middleware import is_rate_limited
+
+        assert is_rate_limited("/api/yield")
+        assert is_rate_limited("/api/tiles")
+        assert is_rate_limited("/api/auth/guest")
+        assert not is_rate_limited("/api/health")
+        assert not is_rate_limited("/")
+        assert not is_rate_limited("/assets/Explore-BP6IwWWS.js")
+        assert not is_rate_limited("/textures/earth-night.jpg")
+        # A path that merely contains "api" is not under the API prefix.
+        assert not is_rate_limited("/apiary")
