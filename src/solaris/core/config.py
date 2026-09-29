@@ -171,7 +171,7 @@ class Settings(BaseSettings):
     #:
     #: Raise it deliberately after watching the console meter, not on the
     #: assumption that headroom exists.
-    daily_ee_cost_budget: float = Field(default=40.0, ge=0)
+    daily_ee_cost_budget: float = Field(default=100.0, ge=0)
 
     #: Requests per identity per window. Keyed on the signed-in subject where
     #: available, falling back to client IP.

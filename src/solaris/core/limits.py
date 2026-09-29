@@ -96,10 +96,17 @@ class EarthEngineBudget:
         with self._lock:
             self._roll()
             if self.limit and self._count + n > self.limit:
+                # State what the request needed, not just what is spent. The
+                # earlier message read "budget of 40 units is exhausted (36
+                # used)", which looks like a contradiction: it reads as though
+                # 4 units remain. They do -- the request wanted more than 4.
                 raise BudgetExceededError(
-                    f"Daily Earth Engine compute budget of {self.limit:g} units is "
-                    f"exhausted ({self._count:g} used). One unit is roughly one "
-                    f"monthly-window query. Resets at UTC midnight."
+                    f"This request costs {n:g} of the daily Earth Engine budget, but "
+                    f"only {max(0.0, self.limit - self._count):g} of today's "
+                    f"{self.limit:g} units remain ({self._count:g} already spent). "
+                    f"One unit is roughly one monthly-window query; a yearly window "
+                    f"costs twelve. Try a shorter window, or wait for the reset at "
+                    f"UTC midnight."
                 )
             self._count += n
 

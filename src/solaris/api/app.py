@@ -532,15 +532,36 @@ def tiles(req: TilesRequest) -> dict[str, Any]:
         except ValueError as ex:
             raise HTTPException(status_code=400, detail=str(ex)) from ex
 
-        # Four scalar samples plus a lazily-evaluated getMapId. Cheaper than a
-        # yield per call, but the overlay switcher fires it far more often, and
-        # until now it charged nothing at all.
-        ee_stack.enter_context(deps.ee_gate(n_calls=5, cost=C.ee_cost_units(win["mode"], "tiles")))
+        s, e = win["start_date"], win["end_date_exclusive"]
+
+        # Tiles are cached, and this is the fix that matters.
+        #
+        # They were not, despite the API reference claiming a 6 h TTL, so every
+        # layer switch recomputed from scratch *and* -- once tiles started being
+        # metered -- charged the budget again. Opening one city and stepping
+        # through the overlay switcher exhausted a day's allowance, which is
+        # exactly what happened in production at 36 of 40 units.
+        #
+        # The lookup precedes the charge for the same reason it does in
+        # /api/yield: a cached answer costs no Earth Engine compute, so
+        # charging for one would penalise the requests that cost nothing.
+        cached = cache_lookup("/api/tiles", req.model_dump(), start_date=s, end_date_exclusive=e)
+        if cached.value is not None:
+            return {**cached.value, "cache": "HIT"}
+
+        # Four scalar samples plus a getMapId, which Earth Engine then renders
+        # from lazily at the map's own zoom -- much coarser than the 4 m a
+        # yield reduces at. A layer with no temporal reduction is charged flat.
+        ee_stack.enter_context(
+            deps.ee_gate(
+                n_calls=5,
+                cost=C.ee_cost_units(win["mode"], "tiles", layer=req.layer),
+            )
+        )
         deps.ensure_ee()
         coords, aoi = deps.aoi_from_req(req)
         centroid = aoi.centroid(1)
         lon_deg, lat_deg = deps.centroid_lon_lat(centroid)
-        s, e = win["start_date"], win["end_date_exclusive"]
 
         _, building_height, roof_mask = deps.build_roof_layers(
             aoi, req.roof_year, req.presence_threshold, req.min_height_m
@@ -641,7 +662,7 @@ def tiles(req: TilesRequest) -> dict[str, Any]:
         lats = [p[1] for p in coords]
         bounds = [[min(lons), min(lats)], [max(lons), max(lats)]]
 
-        return {
+        payload = {
             "status": "ok",
             "layer": req.layer,
             "baseline_time_mode": win["mode"],
@@ -654,6 +675,10 @@ def tiles(req: TilesRequest) -> dict[str, Any]:
             "bounds": bounds,
             "attribution": "Google Earth Engine",
         }
+        # Shorter TTL than a yield result: the payload carries an Earth Engine
+        # map token, and the token expires well before the physics does.
+        cache_store(cached, payload, end_date_exclusive=e, ttl_s=C.TILE_CACHE_TTL_S)
+        return {**payload, "cache": "MISS"}
     except (
         HTTPException,
         AllowanceExceededError,

@@ -190,22 +190,49 @@ EE_COST_UNITS = {
 #:   fires it far more often than a yield.
 EE_COST_ENDPOINT_MULTIPLIER = {
     "yield": 1.0,
-    "series": 1.5,
+    # About the same total shadow work as a yearly yield -- twelve monthly
+    # reductions rather than one annual one -- plus per-request overhead.
+    # Priced at 1.5 initially, which over-charged: the work is the same sum of
+    # daily images either way.
+    "series": 1.2,
     "baseline": 0.3,
-    "tiles": 0.5,
+    # 0.5 was far too high. A tile response is four scalar samples plus a
+    # getMapId; Earth Engine then renders tiles lazily at the map's own zoom,
+    # which is much coarser than the 4 m a yield reduces at. At 0.5 a single
+    # yearly overlay cost 6 units, so opening one city and switching a few
+    # layers exhausted a 40-unit day -- observed live, at 36 units used.
+    "tiles": 0.15,
 }
+
+#: Tile layers with no temporal reduction at all, charged flat.
+#:
+#: ``roof_mask`` is Open Buildings thresholded: it does not touch ERA5, MODIS
+#: or any sun position, so scaling its cost by the selected window charged for
+#: work that is never done.
+#: Tile-response TTL. Shorter than a result TTL because the payload carries an
+#: Earth Engine map token, which expires long before the physics behind it does.
+TILE_CACHE_TTL_S = 6 * 3600
+
+EE_COST_UNITS_TILE_STATIC = 0.1
+TIME_INVARIANT_TILE_LAYERS = frozenset({"roof_mask"})
 
 #: ``/api/buildings`` is a single vector ``getInfo`` bounded by ``MAX_BUILDINGS``
 #: and does not reduce over time, so its cost is flat rather than window-scaled.
 EE_COST_UNITS_BUILDINGS = 0.1
 
 
-def ee_cost_units(mode: str, endpoint: str = "yield") -> float:
+def ee_cost_units(mode: str, endpoint: str = "yield", layer: str | None = None) -> float:
     """
     Relative compute cost of one query, by temporal mode and endpoint.
 
     An unknown mode bills the dearest and an unknown endpoint bills as a yield,
     so a new caller is over-charged rather than waved through unmetered.
+
+    ``layer`` applies to ``/api/tiles`` only. A layer that reduces over no time
+    window is charged flat, because scaling it by the window would bill for a
+    reduction that never runs.
     """
+    if layer is not None and layer in TIME_INVARIANT_TILE_LAYERS:
+        return EE_COST_UNITS_TILE_STATIC
     mode_cost = EE_COST_UNITS.get(mode, max(EE_COST_UNITS.values()))
     return mode_cost * EE_COST_ENDPOINT_MULTIPLIER.get(endpoint, 1.0)

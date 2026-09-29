@@ -1065,8 +1065,8 @@ covers what a schema cannot express.
 | GET | `/api/auth/me` | 0 | — | — | Remaining allowance for this session. |
 | POST | `/api/baseline` | ~4 | 0.3 × window | — | Roof area plus an irradiance summary. |
 | POST | `/api/yield` | 12 | 1.0 × window | ✓ | The main computation. |
-| POST | `/api/series` | ~16 | 1.5 × window | — | The whole generation curve in one request. |
-| POST | `/api/tiles` | ~5 | 0.5 × window | ✓ (6 h) | Map tile templates for raster overlays. |
+| POST | `/api/series` | ~16 | 1.2 × window | — | The whole generation curve in one request. |
+| POST | `/api/tiles` | ~5 | 0.15 × window, or 0.1 flat for `roof_mask` | ✓ (6 h) | Map tile templates for raster overlays. |
 | POST | `/api/buildings` | 1 | 0.1 flat | — | Open Buildings polygons as GeoJSON. |
 
 `/api/ready` is the one endpoint deliberately exempt from the budget: gating it
@@ -1291,9 +1291,17 @@ EE_COST_UNITS_BUILDINGS = 0.1   # flat: one vector getInfo, no time window
 
 `series` is dearest because it runs a shadow reduction per sub-period, so a
 yearly series does roughly the work of a yearly yield spread over twelve
-requests. `tiles` is cheaper per call but the overlay switcher fires it far more
-often. An unknown mode bills the dearest and an unknown endpoint bills as a
+requests. An unknown mode bills the dearest and an unknown endpoint bills as a
 yield, so a new caller is over-charged rather than waved through unmetered.
+
+**These numbers were recalibrated after a live failure.** The first pass priced
+`tiles` at 0.5 × window and `series` at 1.5 ×, and tiles were not cached at all
+despite this document claiming a 6 h TTL. Exploring one city at a yearly window
+therefore cost **60 units against a 40-unit day** — a visitor could not finish a
+single site, and production refused a layer switch at 36 units used. Tiles are
+now genuinely cached, `roof_mask` is charged flat because it reduces over no
+time window, and the same session costs 33.7 units on first visit and nothing
+on return. A test asserts one city stays under half a day's budget.
 
 ### 8.3 There is no console-side cap to set
 
@@ -1306,8 +1314,10 @@ Measured, on this project: one development day consumed **39,301** of the 540,00
 monthly EECU-seconds — 91% of that month's usage — from a few dozen queries. At
 that rate the month exhausts in under 14 days.
 
-`SOLARIS_DAILY_EE_COST_BUDGET` defaults to **40** cost units/day, roughly 27% of
-the monthly ceiling: about 40 monthly-window queries or 3 yearly ones. Watch the
+`SOLARIS_DAILY_EE_COST_BUDGET` defaults to **100** cost units/day. Spent in
+full every day that is 360,000 of the 540,000 monthly EECU-seconds (67%), and
+measured console usage has run far below it — 59,732 EECU-seconds, 11%, over a
+full month of development and demo traffic. Watch the
 console meter against the `ee_cost` field in the request logs and adjust from
 evidence, not on the assumption that headroom exists.
 
@@ -1499,7 +1509,7 @@ Full list in `.env.example`. The ones that matter in production:
 | `SOLARIS_CACHE_BACKEND` | `firestore` | Tiered: memory in front of Firestore. |
 | `SOLARIS_CORS_ORIGINS` | your domain | A wildcard is **rejected at startup**, not warned about. Accepts comma-separated or JSON. |
 | `SOLARIS_LOG_FORMAT` | `json` | Cloud Logging needs `severity`, not `level`. |
-| `SOLARIS_DAILY_EE_COST_BUDGET` | `40` | Cost units/day, not round-trips. See §8. |
+| `SOLARIS_DAILY_EE_COST_BUDGET` | `100` | Cost units/day, not round-trips. See §8. |
 | `SOLARIS_GUEST_COMPUTATION_ALLOWANCE` | `10` | Must exceed the number of sites a visitor will compare. |
 
 Credentials resolve through plain `google.auth.default()`, which works

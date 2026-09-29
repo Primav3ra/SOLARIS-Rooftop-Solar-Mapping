@@ -524,3 +524,87 @@ class TestRequestLogFields:
         fields = logs.request_lines()[-1]
         assert fields["ee_cost"] == 0.0
         assert fields["ee_calls"] == 0
+
+
+class TestTileCostAndCaching:
+    """
+    The overlay switcher must not be able to exhaust a day's budget.
+
+    Observed in production: a yearly window charged 6 units per overlay
+    (0.5 x 12) with no cache behind it, so one city plus a chart plus one
+    layer reached 36 of 40 units and the next layer was refused. Two causes,
+    both fixed here: tiles were uncached despite the API reference claiming a
+    6 h TTL, and every layer was charged the full window cost even when it
+    reduces over no window at all.
+    """
+
+    def _fresh(self, monkeypatch, budget="1000"):
+        monkeypatch.setenv("SOLARIS_DAILY_EE_COST_BUDGET", budget)
+        get_settings.cache_clear()
+        limits_mod.reset_limits()
+        cache_mod.reset_cache()
+        install_fake_ee(monkeypatch)
+        world.register_world()
+        return _client()
+
+    def test_a_repeated_overlay_is_served_from_cache(self, monkeypatch):
+        client = self._fresh(monkeypatch)
+        body = {**_request(baseline_mode="yearly", year=2023), "layer": "shadow_frequency"}
+
+        first = client.post("/api/tiles", json=body)
+        second = client.post("/api/tiles", json=body)
+
+        assert first.status_code == 200, first.text
+        assert second.status_code == 200, second.text
+        assert first.json()["cache"] == "MISS"
+        assert second.json()["cache"] == "HIT"
+
+    def test_a_cached_overlay_charges_nothing(self, monkeypatch):
+        """The whole point: switching back to a layer already rendered is free."""
+        client = self._fresh(monkeypatch)
+        body = {**_request(baseline_mode="yearly", year=2023), "layer": "sky_view_factor"}
+
+        client.post("/api/tiles", json=body)
+        spent_after_first = limits_mod.get_gate().budget.used
+        client.post("/api/tiles", json=body)
+        spent_after_second = limits_mod.get_gate().budget.used
+
+        assert spent_after_second == spent_after_first
+
+    def test_the_roof_mask_layer_is_not_charged_by_window(self):
+        """
+        roof_mask is Open Buildings thresholded. It touches no ERA5, no MODIS
+        and no sun position, so a yearly roof_mask must not cost twelve times
+        a monthly one -- it does exactly the same work.
+        """
+        from solaris.core import constants as C
+
+        yearly = C.ee_cost_units("yearly", "tiles", layer="roof_mask")
+        monthly = C.ee_cost_units("monthly", "tiles", layer="roof_mask")
+        assert yearly == monthly == C.EE_COST_UNITS_TILE_STATIC
+
+    def test_stepping_through_every_overlay_fits_in_a_day(self):
+        """
+        The failure that was actually observed. A user opens one city, reads
+        the chart, and steps through all five overlays; that must not consume
+        a day's allowance.
+        """
+        from solaris.core import constants as C
+
+        layers = (
+            "roof_mask",
+            "shadow_frequency",
+            "sky_view_factor",
+            "net_irradiance",
+            "temperature_delta",
+        )
+        session = (
+            C.ee_cost_units("yearly", "yield")
+            + C.ee_cost_units("yearly", "series")
+            + sum(C.ee_cost_units("yearly", "tiles", layer=layer) for layer in layers)
+        )
+        budget = get_settings().daily_ee_cost_budget
+        assert session < budget / 2, (
+            f"one city costs {session:g} units against a {budget:g}-unit day, so a "
+            f"visitor cannot examine two sites. Overlay pricing is too high."
+        )

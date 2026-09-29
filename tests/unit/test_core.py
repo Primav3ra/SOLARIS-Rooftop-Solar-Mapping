@@ -274,8 +274,24 @@ class TestEarthEngineBudget:
     def test_raises_when_exhausted(self):
         budget = limits_mod.EarthEngineBudget(limit=5)
         budget.consume(5)
-        with pytest.raises(limits_mod.BudgetExceededError, match="exhausted"):
+        with pytest.raises(limits_mod.BudgetExceededError):
             budget.consume(1)
+
+    def test_the_refusal_says_what_the_request_needed(self):
+        """
+        The earlier message gave only the running total, so a refusal read
+        "budget of 40 units is exhausted (36 used)" -- which looks like a
+        contradiction, because 4 units plainly remain. They did; the request
+        wanted 6. Without the cost of the request the message is unactionable.
+        """
+        budget = limits_mod.EarthEngineBudget(limit=40)
+        budget.consume(36)
+        with pytest.raises(limits_mod.BudgetExceededError) as excinfo:
+            budget.consume(6)
+        message = str(excinfo.value)
+        assert "6" in message, "the cost of the refused request"
+        assert "4" in message, "what remains"
+        assert "36" in message, "what was already spent"
 
     def test_a_partial_overrun_is_refused_atomically(self):
         """Consuming 3 against a remaining 2 must take none of them."""
