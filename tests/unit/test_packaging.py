@@ -31,10 +31,6 @@ PYPROJECT = REPO_ROOT / "pyproject.toml"
 #: Modules imported under ``src/solaris`` that are deliberately not runtime
 #: dependencies, each with the reason.
 EXEMPT = {
-    # The test fake and MonkeyPatch, imported inside a function in
-    # evals/profile_yield.py, which is a development tool and raises a clear
-    # message when the dev extra is absent.
-    "pytest",
     # Declared in the ml extra, imported lazily by solaris.ml.
     "sklearn",
     "joblib",
@@ -44,16 +40,7 @@ EXEMPT = {
     "pandas",
     # Declared in the firestore extra, imported lazily with a degradation path.
     "google",
-    # The test package itself. A shipped module importing the test tree is a
-    # layering violation, and exactly one module does it -- see
-    # test_only_the_profiler_imports_the_test_package, which keeps it from
-    # spreading. profile_yield counts round-trips against the numpy fake, so
-    # the fake is its subject rather than an incidental dependency.
-    "tests",
 }
-
-#: The single module permitted to import the test package.
-PROFILER = "evals/profile_yield.py"
 
 
 def _manifest() -> dict:

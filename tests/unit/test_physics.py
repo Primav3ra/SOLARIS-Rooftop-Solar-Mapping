@@ -342,10 +342,6 @@ class TestLossDecomposition:
         assert payload["computed"]["soiling"] is None
         assert "mismatch" in payload["assumed"]
 
-    def test_legacy_scalar_is_frozen(self):
-        """The control arm must stay bit-identical for comparison."""
-        assert losses.legacy_lumped_scalar(0.18, 0.80, 0.70) == pytest.approx(0.1008)
-
 
 class TestAnnualSpecificYield:
     def test_runs_end_to_end(self, clear_day_index, clear_day_irradiance):

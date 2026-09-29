@@ -138,41 +138,6 @@ class TestDatasetSchema:
 
 
 class TestIrradianceMagnitudes:
-    def test_annual_ghi_is_plausible_for_delhi(self, ee_session, aoi):
-        from solaris.gee.irradiance import get_era5_baseline_info
-
-        info = get_era5_baseline_info(aoi, start_year=2020, end_year=2024)
-        ghi = info["mean_annual_ghi_kwh_m2_year"]
-        assert GHI_PLAUSIBLE_MIN <= ghi <= GHI_PLAUSIBLE_MAX, (
-            f"ERA5-Land annual GHI {ghi:.0f} kWh/m2/yr is outside the plausible "
-            f"band [{GHI_PLAUSIBLE_MIN}, {GHI_PLAUSIBLE_MAX}] -- check the unit "
-            "conversion or the collection id"
-        )
-        assert info["value_source"] != "fallback_zero", (
-            "the reduction fell through to its silent-zero fallback"
-        )
-
-    @pytest.mark.parametrize(
-        "start,end,lo,hi",
-        [
-            ("2022-06-01", "2022-06-02", 4.0, 9.0),  # clear pre-monsoon day
-            ("2022-12-01", "2022-12-02", 2.0, 6.0),  # low winter sun
-        ],
-    )
-    def test_daily_ghi_magnitude(self, ee_session, aoi, start, end, lo, hi):
-        """Pins the J/m2 -> kWh/m2 divisor and the 'per hour' band semantics."""
-        from solaris.gee.irradiance import get_era5_range_info
-
-        total = get_era5_range_info(aoi, start, end)["range_total_ghi_kwh_m2"]
-        assert lo <= total <= hi, f"{start}: {total:.2f} kWh/m2 outside [{lo}, {hi}]"
-
-    def test_summer_exceeds_winter(self, ee_session, aoi):
-        from solaris.gee.irradiance import get_era5_range_info
-
-        june = get_era5_range_info(aoi, "2022-06-01", "2022-07-01")
-        december = get_era5_range_info(aoi, "2022-12-01", "2023-01-01")
-        assert june["range_total_ghi_kwh_m2"] > december["range_total_ghi_kwh_m2"]
-
     @pytest.mark.parametrize(
         "start,end,lo,hi",
         [
@@ -192,38 +157,6 @@ class TestIrradianceMagnitudes:
         assert info["source"] == "era5_hourly", "fell back instead of sampling"
         assert lo <= info["beam_fraction"] <= hi
         assert info["beam_fraction"] + info["diffuse_fraction"] == pytest.approx(1.0, abs=1e-6)
-
-
-class TestRooftopExtraction:
-    def test_rooftop_area_is_positive_and_below_the_aoi(self, ee_session, aoi):
-        from solaris.gee.rooftops import get_rooftop_area_m2_info
-
-        info = get_rooftop_area_m2_info(aoi, year=2022)
-        area = info["rooftop_candidate_area_m2"]
-        aoi_area = info["aoi_area_km2"] * 1e6
-        assert area > 0, "no rooftop pixels found in central Delhi"
-        assert area < aoi_area, "rooftop area exceeds the AOI"
-
-    def test_higher_presence_threshold_yields_less_area(self, ee_session, aoi):
-        from solaris.gee.rooftops import get_rooftop_area_m2_info
-
-        loose = get_rooftop_area_m2_info(aoi, year=2022, presence_threshold=0.3)
-        strict = get_rooftop_area_m2_info(aoi, year=2022, presence_threshold=0.8)
-        assert strict["rooftop_candidate_area_m2"] <= loose["rooftop_candidate_area_m2"]
-
-    def test_roof_masked_baseline_is_consistent(self, ee_session, aoi):
-        from solaris.gee.irradiance import get_roof_masked_era5_baseline_info
-        from solaris.gee.layers import build_roof_layers
-
-        layers = build_roof_layers(aoi, roof_year=2022, presence_threshold=0.5, min_height_m=0.0)
-        info = get_roof_masked_era5_baseline_info(
-            aoi, layers.roof_mask, start_year=2022, end_year=2022
-        )
-        assert info["roof_area_m2"] > 0
-        assert GHI_PLAUSIBLE_MIN <= info["regional_irradiance_kwh_m2_year"] <= GHI_PLAUSIBLE_MAX
-        assert info["pre_penalty_total_kwh_year"] == pytest.approx(
-            info["regional_irradiance_kwh_m2_year"] * info["roof_area_m2"], rel=1e-6
-        )
 
 
 # ---------------------------------------------------------------------------

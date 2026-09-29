@@ -99,7 +99,7 @@ def _request(**overrides):
 class TestAllEndpointsRunOffline:
     @pytest.mark.parametrize(
         "endpoint",
-        ["/api/baseline", "/api/yield", "/api/series", "/api/buildings", "/api/tiles"],
+        ["/api/yield", "/api/series", "/api/buildings", "/api/tiles"],
     )
     def test_endpoint_returns_ok(self, client, endpoint):
         response = client.post(endpoint, json=_request())
@@ -308,7 +308,6 @@ class TestGoldenResponses:
     """
 
     ENDPOINTS: ClassVar[list[str]] = [
-        "/api/baseline",
         "/api/yield",
         "/api/series",
         "/api/buildings",

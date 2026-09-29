@@ -52,7 +52,7 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
-      - run: pip install -e ".[dev,physics]"
+      - run: pip install -e ".[dev,physics,ml]"
       - name: Offline test suite
         # No credentials in the environment. If a test reaches the network it
         # fails here, which is the guarantee we want.

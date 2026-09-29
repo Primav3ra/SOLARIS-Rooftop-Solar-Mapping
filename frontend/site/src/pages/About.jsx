@@ -61,7 +61,7 @@ const SOFTWARE = [
   { name: 'MapLibre GL JS', licence: 'BSD-3-Clause', use: 'The map' },
   { name: 'Chart.js', licence: 'MIT', use: 'Every chart on this site' },
   { name: 'React, Vite, React Router', licence: 'MIT', use: 'This site' },
-  { name: 'three.js, @react-three/fiber, drei', licence: 'MIT', use: 'The landing animation' },
+  { name: 'three.js, @react-three/fiber', licence: 'MIT', use: 'The landing animation' },
 ];
 
 export default function About() {

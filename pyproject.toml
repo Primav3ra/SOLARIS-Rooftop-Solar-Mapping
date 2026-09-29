@@ -52,11 +52,13 @@ physics = [
 ]
 # The ML tracks, which build on the physics layer.
 ml = [
-  "solaris[physics]",
-  "scikit-learn>=1.5,<2",
-  "lightgbm>=4.5,<5",
+  # The decomposition model is serialised with joblib, and a pickled
+  # scikit-learn estimator is only guaranteed to load under the minor version
+  # that wrote it. The committed artifact was trained on 1.9, so the range is
+  # pinned to it: an unpinned image build could pull a newer release, fail to
+  # load the model, and fall back to Erbs without anything reporting it.
+  "scikit-learn>=1.9,<1.10",
   "joblib>=1.4,<2",
-  "pyarrow>=17,<22",
 ]
 # The persistent cache tier and the shared Earth Engine budget counter.
 # Optional so a local run needs no Google Cloud client library at all: without

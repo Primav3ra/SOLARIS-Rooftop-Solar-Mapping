@@ -273,17 +273,3 @@ def temperature_loss(mean_cell_temperature_c: float) -> float:
     """
     delta = mean_cell_temperature_c - STC_CELL_TEMPERATURE_C
     return max(0.0, -TEMPERATURE_COEFFICIENT * delta)
-
-
-def legacy_lumped_scalar(
-    panel_efficiency: float,
-    performance_ratio: float,
-    packing_factor: float,
-) -> float:
-    """
-    The single scalar the pre-pvlib chain used: ``0.18 x 0.80 x 0.70 = 0.1008``.
-
-    Retained verbatim as the control arm, so the two engines can be compared
-    line by line rather than by recollection.
-    """
-    return panel_efficiency * performance_ratio * packing_factor

@@ -456,8 +456,7 @@ export default function Models() {
       <pre>
         <code>{`python -m solaris.evals.fetch --hourly --years 2020 2021 2022
 python -m solaris.ml.train
-python -m solaris.evals.soiling_suite
-python -m solaris.evals.profile_yield`}</code>
+python -m solaris.evals.soiling_suite`}</code>
       </pre>
       <p className="source-note">
         Reports land in <code>ml/reports/</code> and <code>evals/reports/</code>

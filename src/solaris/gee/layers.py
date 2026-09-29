@@ -1,12 +1,10 @@
 """
 Shared rooftop layer construction.
 
-This exists because the roof mask was previously built two different ways:
-``_build_roof_layers`` in the FastAPI module (used by /api/yield, /api/tiles and
-/api/series) and ``SolarMappingUtils._build_roof_mask`` (used by /api/baseline),
-each with its own copy of the slope-exclusion threshold. Two code paths meant
-/api/baseline and /api/yield could disagree about what counted as a rooftop for
-the same AOI. There is now one builder.
+This exists because the roof mask was once built in two places, each with its
+own copy of the slope-exclusion threshold, so two endpoints could disagree about
+what counted as a rooftop for the same AOI. There is now one builder, used by
+/api/yield, /api/tiles and /api/series.
 """
 
 from __future__ import annotations

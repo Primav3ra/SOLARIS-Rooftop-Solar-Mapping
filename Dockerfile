@@ -55,7 +55,10 @@ COPY src/solaris/__init__.py src/solaris/__init__.py
 # SOLARIS_CACHE_BACKEND=firestore would degrade to memory-only -- reported
 # through /api/config, but still not what the deploy asked for, and the shared
 # budget would quietly become per-instance.
-RUN pip install --no-cache-dir ".[physics,firestore]"
+# ml is a serving dependency, not only a training one: /api/yield corrects the
+# beam fraction with the decomposition model, and without scikit-learn it
+# silently falls back to Erbs.
+RUN pip install --no-cache-dir ".[physics,firestore,ml]"
 
 # ---------------------------------------------------------------------------
 # Stage 3: runtime
@@ -76,12 +79,15 @@ COPY --from=deps /opt/venv /opt/venv
 COPY --chown=solaris:solaris src/ ./src/
 COPY --chown=solaris:solaris pyproject.toml README.md LICENSE ./
 
+# The decomposition model. The registry resolves it relative to the package
+# (<app>/ml/artifacts), and without this line the image had no model file: the
+# service fell back to Erbs on every request while reporting nothing wrong.
+# /api/version now says which, so a deploy can be checked in one request.
+COPY --chown=solaris:solaris ml/artifacts/ ./ml/artifacts/
+
 # The built site. Vite writes into the package's static directory, so this
 # lands exactly where the app's StaticFiles mount expects it.
 COPY --from=frontend --chown=solaris:solaris /build/src/solaris/api/static/ ./src/solaris/api/static/
-
-# Committed reference data, so the eval harness runs inside the container.
-COPY --chown=solaris:solaris evals/references/ ./evals/references/
 
 RUN pip install --no-cache-dir --no-deps -e . && chown -R solaris:solaris /app
 

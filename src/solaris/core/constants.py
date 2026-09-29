@@ -184,7 +184,6 @@ EE_COST_UNITS = {
 #:
 #: - ``series`` reduces shadow per sub-period and adds a sky-view and an area
 #:   reduction on top, so slightly more than the equivalent yield.
-#: - ``baseline`` runs ERA5 reductions only -- no shadow, no sky-view.
 #: - ``tiles`` takes four scalar samples and then hands a lazily-evaluated
 #:   ``getMapId`` to the client; cheaper per call, but the overlay switcher
 #:   fires it far more often than a yield.
@@ -195,7 +194,6 @@ EE_COST_ENDPOINT_MULTIPLIER = {
     # Priced at 1.5 initially, which over-charged: the work is the same sum of
     # daily images either way.
     "series": 1.2,
-    "baseline": 0.3,
     # 0.5 was far too high. A tile response is four scalar samples plus a
     # getMapId; Earth Engine then renders tiles lazily at the map's own zoom,
     # which is much coarser than the 4 m a yield reduces at. At 0.5 a single

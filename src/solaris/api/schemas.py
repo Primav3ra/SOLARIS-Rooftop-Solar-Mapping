@@ -128,10 +128,6 @@ class TemporalMixin(BaseModel):
     end_date_exclusive: str | None = None
 
 
-class BaselineRequest(AoiMixin, RoofMixin, TemporalMixin):
-    pass
-
-
 class YieldRequest(AoiMixin, RoofMixin, TemporalMixin):
     panel_efficiency: float = Field(default=0.18, gt=0.0, le=0.40)
     performance_ratio: float = Field(default=0.80, gt=0.0, le=1.0)

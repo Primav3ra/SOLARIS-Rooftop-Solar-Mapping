@@ -15,7 +15,6 @@ around 0.55-0.72 a year -- higher in the dry season, lower under monsoon cloud.
 
 from __future__ import annotations
 
-from datetime import date
 from typing import Any
 
 import ee
@@ -107,89 +106,9 @@ def _era5_total(start_date: str, end_date_exclusive: str) -> ee.Image:
 # ---------------------------------------------------------------------------
 
 
-def era5_mean_annual_ghi_kwh_m2(
-    aoi: ee.Geometry,
-    start_year: int = 2020,
-    end_year: int = 2024,
-) -> ee.Image:
-    """Mean annual GHI (kWh/m^2/year) from ERA5-Land over [start_year, end_year]. Band: annual_GHI_kWh_m2."""
-    if end_year < start_year:
-        raise ValueError("end_year must be >= start_year")
-    n = end_year - start_year + 1
-    total = _era5_total(f"{start_year}-01-01", f"{end_year + 1}-01-01")
-    return total.divide(n).rename("annual_GHI_kWh_m2")
-
-
-def get_era5_baseline_info(
-    aoi: ee.Geometry,
-    start_year: int = 2020,
-    end_year: int = 2024,
-    scale_m: float = ERA5_SCALE_M,
-) -> dict[str, Any]:
-    """Mean annual GHI stats dict for API / utility."""
-    r = _mean_over_aoi(
-        era5_mean_annual_ghi_kwh_m2(aoi, start_year, end_year), "annual_GHI_kWh_m2", aoi, scale_m
-    )
-    return {
-        "mean_annual_ghi_kwh_m2_year": r["value"],
-        "start_year": start_year,
-        "end_year": end_year,
-        "collection": ERA5_COLLECTION,
-        "band": ERA5_BAND,
-        "reduce_scale_m": scale_m,
-        "value_source": r["source"],
-        "reduce_region_raw": r["raw"],
-    }
-
-
 # ---------------------------------------------------------------------------
 # Public: arbitrary date-range baseline
 # ---------------------------------------------------------------------------
-
-
-def get_era5_range_info(
-    aoi: ee.Geometry,
-    start_date: str,
-    end_date_exclusive: str,
-    scale_m: float = ERA5_SCALE_M,
-) -> dict[str, Any]:
-    """Period-total and annualised ERA5 GHI stats for an arbitrary date window."""
-    r = _mean_over_aoi(
-        _era5_total(start_date, end_date_exclusive), "total_GHI_kWh_m2", aoi, scale_m
-    )
-    total = float(r["value"])
-    days = max((date.fromisoformat(end_date_exclusive) - date.fromisoformat(start_date)).days, 1)
-    # D6: annualising by x365.25/days assumes the window is representative of
-    # the year, which a short window is not -- a clear December day in Delhi
-    # annualises to roughly double the true figure, a monsoon day to roughly
-    # half. Below _C.MIN_DAYS_FOR_ANNUALISATION the field is omitted entirely
-    # rather than reported with a caveat nobody reads. The period total is
-    # always present and always correct.
-    annualised = total * (365.25 / days) if days >= _C.MIN_DAYS_FOR_ANNUALISATION else None
-
-    return {
-        "range_total_ghi_kwh_m2": total,
-        "range_annualized_ghi_kwh_m2_year": annualised,
-        "annualisation": (
-            "omitted" if annualised is None else "naive_scaling_no_seasonal_correction"
-        ),
-        "annualisation_note": (
-            f"Window is {days} day(s); annualising below "
-            f"{_C.MIN_DAYS_FOR_ANNUALISATION} days would assume it represents the "
-            "whole year. Use range_total_ghi_kwh_m2."
-            if annualised is None
-            else "Scaled by 365.25/days with no seasonal correction, so a "
-            "window biased towards one season carries that bias."
-        ),
-        "range_start_date": start_date,
-        "range_end_date_exclusive": end_date_exclusive,
-        "range_days": days,
-        "collection": ERA5_COLLECTION,
-        "band": ERA5_BAND,
-        "reduce_scale_m": scale_m,
-        "value_source": r["source"],
-        "reduce_region_raw": r["raw"],
-    }
 
 
 # ---------------------------------------------------------------------------
@@ -218,82 +137,6 @@ def sample_era5_period_ghi_kwh_m2_at_point(
 # ---------------------------------------------------------------------------
 # Public: roof-masked baselines
 # ---------------------------------------------------------------------------
-
-
-def _compute_roof_area_m2(roof_mask: ee.Image, aoi: ee.Geometry, scale: float = 4.0) -> float:
-    raw = (
-        roof_mask.toFloat()
-        .multiply(ee.Image.pixelArea())
-        .rename("roof_area_m2")
-        .reduceRegion(
-            reducer=ee.Reducer.sum(), geometry=aoi, scale=scale, maxPixels=1e9, tileScale=2
-        )
-        .getInfo()
-    )
-    return 0.0 if (raw is None or raw.get("roof_area_m2") is None) else float(raw["roof_area_m2"])
-
-
-def get_roof_masked_era5_baseline_info(
-    aoi: ee.Geometry,
-    roof_mask: ee.Image,
-    start_year: int = 2020,
-    end_year: int = 2024,
-    scale_m: float = ERA5_SCALE_M,
-    roof_area_scale_m: float = 4.0,
-) -> dict[str, Any]:
-    """Roof area x regional ERA5 annual GHI -> pre-penalty total (yearly mode)."""
-    roof_area = _compute_roof_area_m2(roof_mask, aoi, roof_area_scale_m)
-    r = _mean_over_aoi(
-        era5_mean_annual_ghi_kwh_m2(aoi, start_year, end_year), "annual_GHI_kWh_m2", aoi, scale_m
-    )
-    irr = float(r["value"])
-    return {
-        "roof_area_m2": roof_area,
-        "regional_irradiance_kwh_m2_year": irr,
-        "pre_penalty_total_kwh_year": irr * roof_area if roof_area > 0 else 0.0,
-        "start_year": start_year,
-        "end_year": end_year,
-        "collection": ERA5_COLLECTION,
-        "band": ERA5_BAND,
-        "reduce_scale_m": scale_m,
-        "roof_area_scale_m": roof_area_scale_m,
-        "method": "two_scale_roof_area_x_era5_annual",
-        "irradiance_source": r["source"],
-    }
-
-
-def get_roof_masked_era5_baseline_for_date_range(
-    aoi: ee.Geometry,
-    roof_mask: ee.Image,
-    start_date: str,
-    end_date_exclusive: str,
-    scale_m: float = ERA5_SCALE_M,
-    roof_area_scale_m: float = 4.0,
-) -> dict[str, Any]:
-    """Roof area x period ERA5 GHI -> pre-penalty totals (quarterly / daily mode)."""
-    range_info = get_era5_range_info(aoi, start_date, end_date_exclusive, scale_m)
-    roof_area = _compute_roof_area_m2(roof_mask, aoi, roof_area_scale_m)
-    period_total = float(range_info["range_total_ghi_kwh_m2"])
-    raw_annualised = range_info["range_annualized_ghi_kwh_m2_year"]
-    annualized = float(raw_annualised) if raw_annualised is not None else None
-    return {
-        "roof_area_m2": roof_area,
-        "regional_irradiance_kwh_m2_year": annualized,
-        "period_ghi_kwh_m2": period_total,
-        "pre_penalty_total_kwh_year": (
-            annualized * roof_area if (annualized is not None and roof_area > 0) else None
-        ),
-        "pre_penalty_total_kwh_period": period_total * roof_area if roof_area > 0 else 0.0,
-        "range_start_date": start_date,
-        "range_end_date_exclusive": end_date_exclusive,
-        "range_days": range_info["range_days"],
-        "collection": ERA5_COLLECTION,
-        "band": ERA5_BAND,
-        "reduce_scale_m": scale_m,
-        "roof_area_scale_m": roof_area_scale_m,
-        "method": "two_scale_roof_area_x_era5_range_annualized",
-        "irradiance_source": range_info["value_source"],
-    }
 
 
 def sample_era5_beam_fraction_at_point(

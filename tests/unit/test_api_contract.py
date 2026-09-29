@@ -30,7 +30,6 @@ from solaris.core import constants as C
 
 #: Endpoints that take an AOI and therefore share the bounds validators.
 AOI_ENDPOINTS = [
-    "/api/baseline",
     "/api/yield",
     "/api/tiles",
     "/api/buildings",

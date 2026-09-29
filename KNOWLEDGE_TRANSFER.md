@@ -274,8 +274,9 @@ package, and patches each module's *bound* `ee` attribute. Patching
 
 ### 2.4 The twelve Earth Engine round-trips
 
-Measured, not estimated — `solaris.evals.profile_yield` counts `getInfo()` calls
-against the numpy fake, and the count is exact.
+Measured, not estimated — counted as `getInfo()` calls against the numpy fake,
+so the count is exact. The profiler that produced it has since been removed; the
+result is kept in `evals/reports/track_b_profile.md`.
 
 ```
   /api/yield                                                    round-trips
@@ -410,7 +411,6 @@ src/solaris/
     fetch.py        the only outbound HTTP in the project
     harness.py      the validation run
     soiling_suite.py     soiling against published rates and pvlib
-    profile_yield.py     where the round-trips go
     pvlib_suite.py       our physics against pvlib's
 
   api/
@@ -931,8 +931,7 @@ costs zero round-trips rather than a fraction of one stage's compute.
 dominating wall-clock time — for instance a city-scale area making the
 directional trace time out server-side. That is a different use case from the
 single-building query this endpoint serves, and the input bounds cap the area at
-30 km² specifically to stay out of that regime. Re-run
-`python -m solaris.evals.profile_yield --live` against such an area before
+30 km² specifically to stay out of that regime. Profile such an area live before
 reconsidering. Report committed at `evals/reports/track_b_profile.md`.
 
 ---
@@ -944,7 +943,6 @@ Generated reports live in `evals/reports/`. Regenerate with:
 ```bash
 python -m solaris.evals.harness          # irradiance, beam fraction, yield
 python -m solaris.evals.soiling_suite    # soiling vs published rates and pvlib
-python -m solaris.evals.profile_yield    # where the round-trips go
 python -m solaris.ml.train               # the model ladder
 ```
 
@@ -1133,7 +1131,6 @@ covers what a schema cannot express.
 | GET | `/api/presets` | 1 | — | ✓ | Available windows, defaults, every physical constant. |
 | POST | `/api/auth/guest` | 0 | — | — | Mint a session token. |
 | GET | `/api/auth/me` | 0 | — | — | Remaining allowance for this session. |
-| POST | `/api/baseline` | ~4 | 0.3 × window | — | Roof area plus an irradiance summary. |
 | POST | `/api/yield` | 12 | 1.0 × window | ✓ | The main computation. |
 | POST | `/api/series` | ~16 | 1.2 × window | — | The whole generation curve in one request. |
 | POST | `/api/tiles` | ~5 | 0.15 × window, or 0.1 flat for `roof_mask` | ✓ (6 h) | Map tile templates for raster overlays. |
@@ -1354,7 +1351,7 @@ Each endpoint then carries a multiplier relative to the same window's yield:
 
 ```python
 EE_COST_ENDPOINT_MULTIPLIER = {
-    "yield": 1.0, "series": 1.5, "baseline": 0.3, "tiles": 0.5,
+    "yield": 1.0, "series": 1.2, "tiles": 0.15,
 }
 EE_COST_UNITS_BUILDINGS = 0.1   # flat: one vector getInfo, no time window
 ```
@@ -2131,18 +2128,17 @@ mechanism. "This is a weakness we are honest about" is not.
 Carried forward deliberately, rather than left to be rediscovered.
 
 1. **`SoilingPenalty.stats()` is documented as superseded but is still the live
-   path** for `/api/baseline` and `/api/series`; only `/api/yield` uses
-   `stats_windowed()`. Either migrate those two endpoints or stop calling the
-   method superseded — as it stands the window-independent soiling figure is what
-   those endpoints report.
+   path** for `/api/series`; only `/api/yield` uses `stats_windowed()`. Either
+   migrate it or stop calling the method superseded — as it stands the
+   window-independent soiling figure is what that endpoint reports.
 2. **Re-run the live round-trip profile.** The committed
    `evals/reports/track_b_profile.json` records
    `shadow_frequency_reduce: -1.0` with `User memory limit exceeded` — a failure
    that the energy-stack reduction and `tileScale=4` have since fixed. The
    Track B decision does not depend on it (that rests on the exact round-trip
    count, which is unaffected), but the published stage timings are incomplete
-   until `python -m solaris.evals.profile_yield --live` is run again with
-   credentials.
+   until a live profile is run again with credentials (the offline profiler
+   was removed as unused).
 3. **Per-endpoint cost multipliers are reasoned, not measured.** §8.2's
    multipliers come from counting reductions, not from EECU-second telemetry.
    Once the console meter has a few weeks of data against the `ee_cost` log

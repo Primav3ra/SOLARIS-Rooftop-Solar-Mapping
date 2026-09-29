@@ -32,7 +32,6 @@ from solaris.api import deps, middleware
 from solaris.api.auth import GUEST_HEADER, AllowanceExceededError, get_guest_allowance
 from solaris.api.deps import EarthEngineUnavailableError
 from solaris.api.schemas import (
-    BaselineRequest,
     BuildingsRequest,
     TilesRequest,
     YieldRequest,
@@ -61,16 +60,11 @@ from solaris.gee.datasets import get_open_buildings_vector
 from solaris.gee.irradiance import (
     _ERA5_HOURLY_SCALE_M,
     ERA5_SCALE_M,
-    get_era5_baseline_info,
-    get_era5_range_info,
-    get_roof_masked_era5_baseline_for_date_range,
-    get_roof_masked_era5_baseline_info,
     sample_era5_beam_fraction_at_point,
     sample_era5_beam_multi,
     sample_era5_period_ghi_kwh_m2_at_point,
     sample_era5_period_ghi_multi,
 )
-from solaris.gee.layers import build_exclusion_mask, build_roof_layers
 from solaris.gee.penalties import (
     ShadowPenalty,
     SkyViewFactor,
@@ -78,7 +72,6 @@ from solaris.gee.penalties import (
     UHIPenalty,
     net_irradiance_image,
 )
-from solaris.gee.rooftops import get_rooftop_area_m2_info
 
 #: Upper end of the shadow-frequency colour stretch.
 #:
@@ -296,6 +289,26 @@ def _public_constants() -> dict[str, Any]:
     }
 
 
+def _decomposition_status() -> str:
+    """
+    Which beam/diffuse model this instance will actually use.
+
+    The fallback to Erbs is deliberate and silent at request time, which is
+    exactly why it needs reporting somewhere: production once ran without
+    scikit-learn and without the model file, served Erbs on every request, and
+    nothing said so. This makes the check one request after a deploy.
+    """
+    try:
+        from solaris.ml import registry
+
+        manifest = registry.load_manifest()
+        if registry.load() is not None and manifest is not None:
+            return f"{manifest.name}@{manifest.version}"
+        return "unavailable: falling back to Erbs"
+    except Exception as exc:  # the extra may be absent entirely
+        return f"unavailable: {type(exc).__name__}"
+
+
 @app.get("/api/version")
 def version() -> dict[str, Any]:
     """
@@ -311,6 +324,7 @@ def version() -> dict[str, Any]:
         "env": settings.env,
         "algo_version": C.ALGO_VERSION,
         "dataset_version": C.DATASET_VERSION,
+        "decomposition_model": _decomposition_status(),
     }
 
 
@@ -452,118 +466,6 @@ def _beam_fraction_for(
         "decomposition_detail": corrected.detail,
         "clearness_index": corrected.clearness_index,
     }
-
-
-@app.post("/api/baseline")
-def compute_baseline(req: BaselineRequest, request: Request) -> dict[str, Any]:
-    """
-    AOI rooftop area plus an ERA5 irradiance summary for the selected window.
-
-    Previously built a SolarMappingUtils instance per request, which called
-    ee.Initialize() every time and used its own copy of the roof-mask builder.
-    It now shares _ensure_ee and solaris.gee.layers with every other endpoint.
-    """
-    ee_stack = contextlib.ExitStack()
-    try:
-        # ERA5 reductions only -- no shadow and no sky-view -- so this costs a
-        # fraction of the equivalent /api/yield. The window is resolved further
-        # down, so the gate is entered there rather than here.
-        # EE must be initialised before any ee.* object is constructed --
-        # _aoi_from_req builds an ee.Geometry, so it cannot come first.
-        deps.ensure_ee()
-        coords, aoi = deps.aoi_from_req(req)
-
-        exclusion = build_exclusion_mask(aoi)
-        rooftop = get_rooftop_area_m2_info(
-            aoi,
-            year=req.roof_year,
-            presence_threshold=req.presence_threshold,
-            min_height_m=req.min_height_m,
-            exclusion_mask=exclusion,
-        )
-
-        try:
-            win = resolve_temporal_window(
-                req.baseline_mode,
-                req.year,
-                req.quarter,
-                req.month,
-                req.start_date,
-                req.end_date_exclusive,
-            )
-        except ValueError as ex:
-            raise HTTPException(status_code=400, detail=str(ex)) from ex
-
-        mode = win["mode"]
-        s_date, e_date = win["start_date"], win["end_date_exclusive"]
-
-        ee_stack.enter_context(deps.ee_gate(n_calls=4, cost=C.ee_cost_units(mode, "baseline")))
-
-        roof_mask = build_roof_layers(
-            aoi,
-            roof_year=req.roof_year,
-            presence_threshold=req.presence_threshold,
-            min_height_m=req.min_height_m,
-            exclusion_mask=exclusion,
-        ).roof_mask
-
-        aoi_baseline = None
-        range_info = None
-
-        if mode == "yearly":
-            year = int(win["calendar_year"])
-            roof_baseline = get_roof_masked_era5_baseline_info(
-                aoi=aoi, roof_mask=roof_mask, start_year=year, end_year=year
-            )
-            aoi_baseline = get_era5_baseline_info(aoi, start_year=year, end_year=year)
-        else:
-            # quarterly / monthly / daily all take the same date-range path;
-            # only the labels differ.
-            roof_baseline = get_roof_masked_era5_baseline_for_date_range(
-                aoi=aoi,
-                roof_mask=roof_mask,
-                start_date=s_date,
-                end_date_exclusive=e_date,
-            )
-            range_info = get_era5_range_info(aoi, start_date=s_date, end_date_exclusive=e_date)
-
-        roof_baseline.update(
-            {
-                "baseline_time_mode": mode,
-                "start_date": s_date,
-                "end_date_exclusive": e_date,
-                "calendar_year": win.get("calendar_year"),
-                "quarter": win.get("quarter"),
-                "month": win.get("month"),
-            }
-        )
-
-        return {
-            "status": "ok",
-            "baseline_time_mode": mode,
-            "temporal_window": {"start_date": s_date, "end_date_exclusive": e_date},
-            "aoi_coordinates": coords,
-            "rooftop": rooftop,
-            "roof_baseline": roof_baseline,
-            "aoi_baseline": aoi_baseline,
-            "range_baseline": range_info,
-        }
-    except (
-        HTTPException,
-        AllowanceExceededError,
-        EarthEngineUnavailableError,
-        BudgetExceededError,
-        RateLimitExceededError,
-        ConcurrencyTimeoutError,
-    ):
-        # Limit failures are translated by the middleware into 429/503
-        # with a Retry-After; swallowing them here would report a quota
-        # problem as an internal error.
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e)) from e
-    finally:
-        ee_stack.close()
 
 
 @app.post("/api/tiles")
@@ -843,7 +745,7 @@ def buildings(req: BuildingsRequest) -> dict[str, Any]:
 @app.post("/api/yield")
 def compute_yield(req: YieldRequest, request: Request) -> Response:
     """
-    Single-building PV energy for the same temporal window as /api/baseline.
+    Single-building PV energy for the selected temporal window.
 
     ERA5 GHI is summed over [start_date, end_date_exclusive) at the AOI centroid.
     Shadow retention uses sun positions aligned with that window (year / quarter / day)

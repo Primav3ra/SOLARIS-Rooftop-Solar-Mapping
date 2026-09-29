@@ -34,7 +34,7 @@ def main() -> int:
     client = TestClient(app_mod.app)
 
     golden: dict[str, object] = {}
-    for endpoint in ["/api/baseline", "/api/yield", "/api/series", "/api/buildings"]:
+    for endpoint in ["/api/yield", "/api/series", "/api/buildings"]:
         world.register_world()
         response = client.post(endpoint, json=dict(world.AOI_REQUEST))
         if response.status_code != 200:

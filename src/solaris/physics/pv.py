@@ -67,16 +67,14 @@ def _require_pvlib():
     Import pvlib lazily.
 
     Kept optional so the default serving path stays light: pvlib pulls numpy,
-    pandas and scipy, which the legacy engine does not need. Install with
+    pandas and scipy. Install with
     ``pip install -e ".[physics]"``.
     """
     try:
         import pvlib
     except ImportError as exc:  # pragma: no cover - exercised by a skipif test
         raise PvlibUnavailableError(
-            "The pvlib engine requires pvlib. Install it with:\n"
-            '    pip install -e ".[physics]"\n'
-            "or use engine='legacy_lumped', which needs no extra dependencies."
+            'The pvlib engine requires pvlib. Install it with:\n    pip install -e ".[physics]"'
         ) from exc
     return pvlib
 

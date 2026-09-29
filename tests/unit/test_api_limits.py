@@ -282,8 +282,8 @@ class TestEveryEarthEngineEndpointIsMetered:
     The budget only guards what it is wired into, and for a while it was wired
     into one endpoint out of five.
 
-    ``/api/yield`` was gated; ``/api/series``, ``/api/tiles``, ``/api/baseline``
-    and ``/api/buildings`` all reached Earth Engine while charging nothing and
+    ``/api/yield`` was gated; ``/api/series``, ``/api/tiles`` and
+    ``/api/buildings`` all reached Earth Engine while charging nothing and
     holding no concurrency slot. ``/api/series`` was the worst of them, because
     it runs a shadow reduction per sub-period -- a yearly series does roughly
     the work of a yearly yield -- and ``/api/tiles`` was the most frequent,
@@ -315,7 +315,7 @@ class TestEveryEarthEngineEndpointIsMetered:
 
     @pytest.mark.parametrize(
         "path",
-        ["/api/yield", "/api/series", "/api/tiles", "/api/baseline", "/api/buildings"],
+        ["/api/yield", "/api/series", "/api/tiles", "/api/buildings"],
     )
     def test_each_endpoint_refuses_work_on_an_exhausted_budget(self, monkeypatch, path):
         monkeypatch.setenv("SOLARIS_DAILY_EE_COST_BUDGET", "0.01")
